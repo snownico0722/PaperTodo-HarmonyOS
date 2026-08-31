@@ -1,5 +1,6 @@
 import { common, ConfigurationConstant, Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { KeyCode } from '@kit.InputKit';
 import { display, window } from '@kit.ArkUI';
 import {
   CapsuleMetrics,
@@ -42,6 +43,7 @@ import {
   parseMarkdownLines
 } from '../common/MarkdownLite';
 import { PaperStore } from '../common/PaperStore';
+import { cloneTodoItems, TodoHistory } from '../common/TodoHistory';
 import {
   createDisplayGeometry,
   DisplayGeometry,
@@ -53,6 +55,13 @@ const CAPSULE_REVEAL_MS: number = 110;
 const CAPSULE_HIDE_MS: number = 130;
 const CAPSULE_DRAG_THRESHOLD: number = 4;
 const CAPSULE_CLICK_SUPPRESS_MS: number = 250;
+const KEYCODE_ENTER: number = 66;
+const KEYCODE_NUMPAD_ENTER: number = 160;
+
+interface NoteEditResult {
+  text: string;
+  caret: number;
+}
 
 @Entry({ useSharedStorage: true })
 @Component
@@ -66,6 +75,9 @@ struct PaperDesktop {
   @StorageLink('useDeepCapsuleMode') @Watch('onDeepCapsuleModeChanged') useDeepCapsuleMode: boolean = true;
   @StorageLink('todoVisualSize') todoVisualSize: string = TODO_VISUAL_MEDIUM;
   @StorageLink('autoBottomCompleted') autoBottomCompleted: boolean = false;
+  @StorageLink('autoClearCompletedTodos') autoClearCompletedTodos: boolean = false;
+  @StorageLink('enableTodoNoteLinks') enableTodoNoteLinks: boolean = true;
+  @StorageLink('showLinkedNoteName') showLinkedNoteName: boolean = false;
   @StorageLink('capsuleGap') capsuleGap: number = 4;
   @StorageLink('paperRevision') @Watch('onPaperRevision') paperRevision: number = 0;
   @StorageLink('systemColorMode') systemColorMode: number = ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT;
@@ -81,6 +93,10 @@ struct PaperDesktop {
   @State deleteConfirm: boolean = false;
   @State showMoreActions: boolean = false;
   @State statusMessage: string = '';
+  @State linkPickerTodoId: string = '';
+  @State todoDragging: boolean = false;
+  @State todoDragDeleteArmed: boolean = false;
+  @State todoHistoryRevision: number = 0;
 
   private paper: PaperData | null = null;
   private moveBaseX: number = 0;
@@ -94,6 +110,9 @@ struct PaperDesktop {
   private todoDragId: string = '';
   private todoDragStartIndex: number = -1;
   private todoDragCurrentIndex: number = -1;
+  private todoDragHistoryRecorded: boolean = false;
+  private todoHistory: TodoHistory = new TodoHistory();
+  private noteController: TextAreaController = new TextAreaController();
   private capsuleMotion: CapsuleMotion = new CapsuleMotion();
   private capsuleHovered: boolean = false;
   private capsuleDragging: boolean = false;
@@ -116,7 +135,7 @@ struct PaperDesktop {
     }
     this.paper = loaded;
     this.title = loaded.title;
-    this.items = loaded.items.slice();
+    this.items = cloneTodoItems(loaded.items);
     this.content = loaded.content;
     this.alwaysOnTop = loaded.alwaysOnTop;
     this.isCollapsed = loaded.isCollapsed && this.useCapsuleMode;
@@ -170,7 +189,7 @@ struct PaperDesktop {
       return;
     }
     this.paper.title = this.title.slice(0, TITLE_MAX_LENGTH);
-    this.paper.items = this.items;
+    this.paper.items = cloneTodoItems(this.items);
     this.paper.content = this.content.slice(0, NOTE_MAX_LENGTH);
     this.paper.alwaysOnTop = this.alwaysOnTop;
     this.paper.isCollapsed = this.isCollapsed;
@@ -230,7 +249,7 @@ struct PaperDesktop {
   }
 
   private pinLabel(): string {
-    return this.alwaysOnTop ? '📌' : '⌖';
+    return this.alwaysOnTop ? '●' : '○';
   }
 
   private titleOrFallback(): string {
@@ -333,17 +352,21 @@ struct PaperDesktop {
       this.statusMessage = '无法新建纸片';
       return;
     }
+    this.startPaper(created.id);
+  }
+
+  private startPaper(paperId: string): void {
     const want: Want = {
       bundleName: 'com.papertodo.app',
       moduleName: 'entry',
       abilityName: 'PaperAbility',
       parameters: {
-        paperId: created.id,
+        paperId: paperId,
         paperCommand: 'show'
       }
     };
     this.hostContext().startAbility(want).catch((error: BusinessError): void => {
-      this.statusMessage = '新建纸片失败：' + error.message;
+      this.statusMessage = '打开纸片失败：' + error.message;
     });
   }
 
@@ -637,29 +660,97 @@ struct PaperDesktop {
     );
   }
 
+  private recordTodoHistory(): void {
+    this.todoHistory.record(this.items);
+    this.todoHistoryRevision += 1;
+  }
+
+  private undoTodo(): void {
+    const previous: PaperItem[] | null = this.todoHistory.undo(this.items);
+    if (previous === null) {
+      this.statusMessage = '没有可撤销的待办操作';
+      return;
+    }
+    this.items = this.renumberItems(previous);
+    this.todoHistoryRevision += 1;
+    this.statusMessage = '已撤销';
+    this.savePaper(false);
+  }
+
+  private redoTodo(): void {
+    const next: PaperItem[] | null = this.todoHistory.redo(this.items);
+    if (next === null) {
+      this.statusMessage = '没有可重做的待办操作';
+      return;
+    }
+    this.items = this.renumberItems(next);
+    this.todoHistoryRevision += 1;
+    this.statusMessage = '已重做';
+    this.savePaper(false);
+  }
+
+  private handleRootKey(event?: KeyEvent): void {
+    if (event === undefined || event.type !== KeyType.Down || this.paper === null || this.paper.type !== PAPER_TYPE_TODO) {
+      return;
+    }
+    let ctrl: boolean = false;
+    try {
+      ctrl = event.getModifierKeyState(['Ctrl']);
+    } catch (error) {
+      ctrl = false;
+    }
+    if (!ctrl) {
+      return;
+    }
+    const key: string = event.keyText.toLowerCase();
+    if (key === 'z') {
+      this.undoTodo();
+      event.stopPropagation();
+    } else if (key === 'y') {
+      this.redoTodo();
+      event.stopPropagation();
+    }
+  }
+
+  private cloneItem(item: PaperItem, order: number = item.order): PaperItem {
+    const copy: PaperItem = {
+      id: item.id,
+      text: item.text,
+      done: item.done,
+      order: order
+    };
+    if (item.linkedNoteId !== undefined) {
+      copy.linkedNoteId = item.linkedNoteId;
+    }
+    return copy;
+  }
+
   private setTodoDone(id: string, done: boolean): void {
-    let changed: PaperItem | null = null;
+    const sourceIndex: number = this.indexOfTodo(id);
+    if (sourceIndex < 0 || this.items[sourceIndex].done === done) {
+      return;
+    }
+    this.recordTodoHistory();
+
+    if (done && this.autoClearCompletedTodos) {
+      this.items = this.removeTodoWithoutHistory(id);
+      this.savePaper(false);
+      return;
+    }
+
+    const changed: PaperItem = this.cloneItem(this.items[sourceIndex]);
+    changed.done = done;
     const remaining: PaperItem[] = [];
     for (let i: number = 0; i < this.items.length; i++) {
-      const item: PaperItem = this.items[i];
-      if (item.id === id) {
-        if (item.done === done) {
-          return;
-        }
-        changed = { id: item.id, text: item.text, done: done, order: item.order };
-      } else {
-        remaining.push({ id: item.id, text: item.text, done: item.done, order: item.order });
+      if (i !== sourceIndex) {
+        remaining.push(this.cloneItem(this.items[i]));
       }
-    }
-    if (changed === null) {
-      return;
     }
 
     if (!this.autoBottomCompleted) {
       const next: PaperItem[] = [];
       for (let i: number = 0; i < this.items.length; i++) {
-        const item: PaperItem = this.items[i];
-        next.push(item.id === id ? changed : { id: item.id, text: item.text, done: item.done, order: item.order });
+        next.push(i === sourceIndex ? changed : this.cloneItem(this.items[i]));
       }
       this.items = this.renumberItems(next);
     } else if (done) {
@@ -683,52 +774,100 @@ struct PaperDesktop {
     const safeText: string = text.slice(0, TODO_ITEM_MAX_LENGTH);
     const next: PaperItem[] = [];
     for (let i: number = 0; i < this.items.length; i++) {
-      const item: PaperItem = this.items[i];
-      next.push({ id: item.id, text: item.id === id ? safeText : item.text, done: item.done, order: i });
+      const item: PaperItem = this.cloneItem(this.items[i], i);
+      if (item.id === id) {
+        item.text = safeText;
+      }
+      next.push(item);
     }
     this.items = next;
     this.savePaper(false);
   }
 
   private deleteTodo(id: string): void {
+    if (this.indexOfTodo(id) < 0) {
+      return;
+    }
+    this.recordTodoHistory();
+    this.items = this.removeTodoWithoutHistory(id);
+    this.savePaper(false);
+  }
+
+  private removeTodoWithoutHistory(id: string): PaperItem[] {
     const next: PaperItem[] = [];
     for (let i: number = 0; i < this.items.length; i++) {
       if (this.items[i].id !== id) {
-        const item: PaperItem = this.items[i];
-        next.push({ id: item.id, text: item.text, done: item.done, order: next.length });
+        next.push(this.cloneItem(this.items[i], next.length));
       }
     }
     if (next.length === 0) {
       next.push(PaperStore.createTodoItem('', 0));
     }
-    this.items = next;
+    return this.renumberItems(next);
+  }
+
+  private handleTodoKey(id: string, event?: KeyEvent): void {
+    if (event === undefined || event.type !== KeyType.Down || event.keyCode !== KeyCode.KEYCODE_DEL) {
+      return;
+    }
+    const index: number = this.indexOfTodo(id);
+    if (index < 0 || this.items[index].text.length > 0 || this.items.length <= 1) {
+      return;
+    }
+    const focusIndex: number = index > 0 ? index - 1 : 1;
+    const focusId: string = this.items[focusIndex].id;
+    this.recordTodoHistory();
+    this.items = this.removeTodoWithoutHistory(id);
     this.savePaper(false);
+    event.stopPropagation();
+    setTimeout((): void => {
+      this.getUIContext().getFocusControl().requestFocus('todo-input-' + focusId);
+    }, 20);
   }
 
   private insertTodoAfter(id: string): void {
+    const index: number = this.indexOfTodo(id);
+    if (index < 0) {
+      return;
+    }
+    this.recordTodoHistory();
+    const created: PaperItem = PaperStore.createTodoItem('', index + 1);
     const next: PaperItem[] = [];
     for (let i: number = 0; i < this.items.length; i++) {
-      const item: PaperItem = this.items[i];
-      next.push({ id: item.id, text: item.text, done: item.done, order: next.length });
-      if (item.id === id) {
-        next.push(PaperStore.createTodoItem('', next.length));
+      next.push(this.cloneItem(this.items[i], next.length));
+      if (this.items[i].id === id) {
+        next.push(created);
       }
     }
-    this.items = next;
+    this.items = this.renumberItems(next);
     this.savePaper(false);
+    setTimeout((): void => {
+      this.getUIContext().getFocusControl().requestFocus('todo-input-' + created.id);
+    }, 20);
   }
 
   private clearCompleted(): void {
+    let hasCompleted: boolean = false;
+    for (let i: number = 0; i < this.items.length; i++) {
+      if (this.items[i].done) {
+        hasCompleted = true;
+        break;
+      }
+    }
+    if (!hasCompleted) {
+      return;
+    }
+    this.recordTodoHistory();
     const next: PaperItem[] = [];
     for (let i: number = 0; i < this.items.length; i++) {
       if (!this.items[i].done) {
-        next.push({ id: this.items[i].id, text: this.items[i].text, done: false, order: next.length });
+        next.push(this.cloneItem(this.items[i], next.length));
       }
     }
     if (next.length === 0) {
       next.push(PaperStore.createTodoItem('', 0));
     }
-    this.items = next;
+    this.items = this.renumberItems(next);
     this.savePaper(false);
   }
 
@@ -749,17 +888,34 @@ struct PaperDesktop {
     this.todoDragId = id;
     this.todoDragStartIndex = index;
     this.todoDragCurrentIndex = index;
+    this.todoDragHistoryRecorded = false;
+    this.todoDragging = true;
+    this.todoDragDeleteArmed = false;
+  }
+
+  private ensureTodoDragHistory(): void {
+    if (!this.todoDragHistoryRecorded) {
+      this.recordTodoHistory();
+      this.todoDragHistoryRecorded = true;
+    }
   }
 
   private updateTodoDrag(event: GestureEvent): void {
     if (this.todoDragStartIndex < 0 || this.todoDragCurrentIndex < 0) {
       return;
     }
-    const delta: number = Math.round(event.offsetY / this.todoRowHeight());
-    const target: number = Math.max(0, Math.min(this.items.length - 1, this.todoDragStartIndex + delta));
+    const rawTarget: number = this.todoDragStartIndex + Math.round(event.offsetY / this.todoRowHeight());
+    if (rawTarget >= this.items.length) {
+      this.ensureTodoDragHistory();
+      this.todoDragDeleteArmed = true;
+      return;
+    }
+    this.todoDragDeleteArmed = false;
+    const target: number = Math.max(0, Math.min(this.items.length - 1, rawTarget));
     if (target === this.todoDragCurrentIndex) {
       return;
     }
+    this.ensureTodoDragHistory();
     const next: PaperItem[] = this.items.slice();
     const moved: PaperItem[] = next.splice(this.todoDragCurrentIndex, 1);
     next.splice(target, 0, moved[0]);
@@ -768,19 +924,24 @@ struct PaperDesktop {
   }
 
   private endTodoDrag(): void {
-    if (this.todoDragStartIndex >= 0 && this.todoDragCurrentIndex >= 0 &&
-      this.todoDragStartIndex !== this.todoDragCurrentIndex) {
+    if (this.todoDragDeleteArmed && this.todoDragId.length > 0) {
+      this.items = this.removeTodoWithoutHistory(this.todoDragId);
+      this.savePaper(false);
+    } else if (this.todoDragHistoryRecorded && this.todoDragStartIndex !== this.todoDragCurrentIndex) {
       this.savePaper(false);
     }
     this.todoDragId = '';
     this.todoDragStartIndex = -1;
     this.todoDragCurrentIndex = -1;
+    this.todoDragHistoryRecorded = false;
+    this.todoDragging = false;
+    this.todoDragDeleteArmed = false;
   }
 
   private renumberItems(items: PaperItem[]): PaperItem[] {
     const next: PaperItem[] = [];
     for (let i: number = 0; i < items.length; i++) {
-      next.push({ id: items[i].id, text: items[i].text, done: items[i].done, order: i });
+      next.push(this.cloneItem(items[i], i));
     }
     return next;
   }
@@ -788,17 +949,24 @@ struct PaperDesktop {
   private addDraftTodos(): void {
     const raw: string = this.draft.replace(/\r\n/g, '\n');
     const lines: string[] = raw.split('\n');
-    const next: PaperItem[] = this.items.slice();
-    let added: number = 0;
-    for (let i: number = 0; i < lines.length && added < TODO_PASTE_MAX_ITEMS; i++) {
+    const additions: string[] = [];
+    for (let i: number = 0; i < lines.length && additions.length < TODO_PASTE_MAX_ITEMS; i++) {
       const cleaned: string = this.cleanTodoPrefix(lines[i]).trim().slice(0, TODO_ITEM_MAX_LENGTH);
       if (cleaned.length > 0) {
-        next.push(PaperStore.createTodoItem(cleaned, next.length));
-        added += 1;
+        additions.push(cleaned);
       }
     }
-    if (added === 0 && raw.trim().length === 0) {
+    if (additions.length === 0 && raw.trim().length !== 0) {
+      return;
+    }
+    this.recordTodoHistory();
+    const next: PaperItem[] = cloneTodoItems(this.items);
+    if (additions.length === 0) {
       next.push(PaperStore.createTodoItem('', next.length));
+    } else {
+      for (let i: number = 0; i < additions.length; i++) {
+        next.push(PaperStore.createTodoItem(additions[i], next.length));
+      }
     }
     this.items = this.renumberItems(next);
     this.draft = '';
@@ -814,9 +982,143 @@ struct PaperDesktop {
     return result;
   }
 
-  private updateNote(value: string): void {
-    this.content = value.slice(0, NOTE_MAX_LENGTH);
+  private notePapers(): PaperData[] {
+    const result: PaperData[] = [];
+    const papers: PaperData[] = PaperStore.listPapers();
+    for (let i: number = 0; i < papers.length; i++) {
+      if (papers[i].type === PAPER_TYPE_NOTE) {
+        result.push(papers[i]);
+      }
+    }
+    return result;
+  }
+
+  private noteTitle(note: PaperData): string {
+    if (note.title.trim().length > 0) {
+      return note.title.trim();
+    }
+    const firstLine: string = note.content.split('\n')[0].trim();
+    return firstLine.length > 0 ? firstLine.slice(0, 20) : '未命名笔记';
+  }
+
+  private linkedNote(item: PaperItem): PaperData | null {
+    if (item.linkedNoteId === undefined) {
+      return null;
+    }
+    const note: PaperData | null = PaperStore.getPaper(item.linkedNoteId);
+    return note !== null && note.type === PAPER_TYPE_NOTE ? note : null;
+  }
+
+  private linkButtonLabel(item: PaperItem): string {
+    const note: PaperData | null = this.linkedNote(item);
+    if (note === null) {
+      return '链';
+    }
+    if (!this.showLinkedNoteName) {
+      return '🔗';
+    }
+    const name: string = this.noteTitle(note);
+    return '🔗' + (name.length > 7 ? name.slice(0, 7) + '…' : name);
+  }
+
+  private toggleLinkPicker(itemId: string): void {
+    this.linkPickerTodoId = this.linkPickerTodoId === itemId ? '' : itemId;
+  }
+
+  private setTodoNoteLink(itemId: string, noteId?: string): void {
+    const index: number = this.indexOfTodo(itemId);
+    if (index < 0) {
+      return;
+    }
+    const current: string | undefined = this.items[index].linkedNoteId;
+    if (current === noteId) {
+      this.linkPickerTodoId = '';
+      return;
+    }
+    this.recordTodoHistory();
+    const next: PaperItem[] = cloneTodoItems(this.items);
+    next[index].linkedNoteId = noteId;
+    this.items = this.renumberItems(next);
+    this.linkPickerTodoId = '';
     this.savePaper(false);
+  }
+
+  private activateLinkedNote(item: PaperItem): void {
+    const note: PaperData | null = this.linkedNote(item);
+    if (note === null) {
+      this.toggleLinkPicker(item.id);
+      return;
+    }
+    const isOpen: boolean = AppStorage.get<boolean>('paperOpen:' + note.id) === true;
+    if (isOpen && note.isVisible && !note.isCollapsed && this.useCapsuleMode) {
+      note.isCollapsed = true;
+      PaperStore.updatePaper(note, true);
+      return;
+    }
+    note.isVisible = true;
+    if (note.isCollapsed) {
+      note.isCollapsed = false;
+      PaperStore.updatePaper(note, true);
+    } else {
+      PaperStore.setPaperVisible(note.id, true);
+    }
+    this.startPaper(note.id);
+  }
+
+  private updateNote(value: string): void {
+    const limited: string = value.slice(0, NOTE_MAX_LENGTH);
+    const result: NoteEditResult = this.applyMarkdownListContinuation(this.content, limited);
+    this.content = result.text;
+    this.savePaper(false);
+    if (result.caret >= 0) {
+      setTimeout((): void => {
+        this.noteController.caretPosition(result.caret);
+      }, 0);
+    }
+  }
+
+  private applyMarkdownListContinuation(previous: string, next: string): NoteEditResult {
+    if (next.length !== previous.length + 1) {
+      return { text: next, caret: -1 };
+    }
+    let diff: number = 0;
+    while (diff < previous.length && previous.charAt(diff) === next.charAt(diff)) {
+      diff += 1;
+    }
+    if (next.charAt(diff) !== '\n') {
+      return { text: next, caret: -1 };
+    }
+    const lineStart: number = previous.lastIndexOf('\n', Math.max(0, diff - 1)) + 1;
+    const line: string = previous.substring(lineStart, diff);
+    const prefix: string = this.markdownContinuationPrefix(line);
+    if (prefix.length === 0) {
+      return { text: next, caret: -1 };
+    }
+    const body: string = line.substring(prefix.length).trim();
+    if (body.length === 0) {
+      const exited: string = next.substring(0, lineStart) + next.substring(diff);
+      return { text: exited, caret: lineStart + 1 };
+    }
+    const continued: string = next.substring(0, diff + 1) + prefix + next.substring(diff + 1);
+    return { text: continued.slice(0, NOTE_MAX_LENGTH), caret: diff + 1 + prefix.length };
+  }
+
+  private markdownContinuationPrefix(line: string): string {
+    let match: RegExpMatchArray | null = line.match(/^(\s*)[-*+]\s+\[[ xX]\]\s+/);
+    if (match !== null) {
+      return match[1] + '- [ ] ';
+    }
+    match = line.match(/^(\s*)[-*+]\s+/);
+    if (match !== null) {
+      const trimmed: string = line.substring(match[1].length);
+      return match[1] + trimmed.charAt(0) + ' ';
+    }
+    match = line.match(/^(\s*)(\d+)([.、])\s+/);
+    if (match !== null) {
+      const nextNumber: number = Number(match[2]) + 1;
+      return match[1] + nextNumber.toString() + match[3] + ' ';
+    }
+    return '';
   }
 
   private toggleNoteBrowse(): void {
@@ -865,9 +1167,19 @@ struct PaperDesktop {
         .width(28)
         .height(30)
         .fontSize(12)
-        .fontColor(this.textColor())
+        .fontColor(this.alwaysOnTop ? this.textColor() : this.mutedColor())
         .backgroundColor(Color.Transparent)
         .onClick((): void => this.toggleTopmost())
+
+      if (this.useCapsuleMode) {
+        Button('▁')
+          .width(28)
+          .height(30)
+          .fontSize(12)
+          .fontColor(this.textColor())
+          .backgroundColor(Color.Transparent)
+          .onClick((): void => this.setCollapsed(true))
+      }
 
       TextInput({
         text: this.title,
@@ -893,16 +1205,6 @@ struct PaperDesktop {
           .fontColor(this.textColor())
           .backgroundColor(Color.Transparent)
           .onClick((): void => this.toggleNoteBrowse())
-      }
-
-      if (this.useCapsuleMode) {
-        Button('▁')
-          .width(28)
-          .height(30)
-          .fontSize(12)
-          .fontColor(this.textColor())
-          .backgroundColor(Color.Transparent)
-          .onClick((): void => this.setCollapsed(true))
       }
 
       Button('⋯')
@@ -940,6 +1242,18 @@ struct PaperDesktop {
   private MoreActionsBar() {
     Scroll() {
       Row({ space: 4 }) {
+        if (this.paper !== null && this.paper.type === PAPER_TYPE_TODO) {
+          Button('↶ 撤销')
+            .height(28)
+            .fontSize(10)
+            .opacity(this.todoHistory.canUndo() ? 1 : 0.4)
+            .onClick((): void => this.undoTodo())
+          Button('↷ 重做')
+            .height(28)
+            .fontSize(10)
+            .opacity(this.todoHistory.canRedo() ? 1 : 0.4)
+            .onClick((): void => this.redoTodo())
+        }
         if (this.paper !== null && this.paper.type === PAPER_TYPE_NOTE) {
           Button(this.markdownModeLabel())
             .height(28)
@@ -968,76 +1282,81 @@ struct PaperDesktop {
   }
 
   @Builder
-  private TodoBody() {
-    Column() {
+  private LinkPicker() {
+    Column({ space: 4 }) {
       Row() {
-        Text(this.completedCount().toString() + '/' + this.items.length.toString())
+        Text('关联笔记')
           .fontSize(11)
-          .fontColor(this.mutedColor())
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.textColor())
         Blank()
-        Button('清已完成')
-          .height(28)
-          .fontSize(10)
-          .fontColor(this.mutedColor())
+        Button('取消关联')
+          .height(26)
+          .fontSize(9)
           .backgroundColor(Color.Transparent)
-          .onClick((): void => this.clearCompleted())
+          .fontColor(this.mutedColor())
+          .onClick((): void => this.setTodoNoteLink(this.linkPickerTodoId))
+        Button('×')
+          .width(26)
+          .height(26)
+          .fontSize(10)
+          .backgroundColor(Color.Transparent)
+          .onClick((): void => {
+            this.linkPickerTodoId = '';
+          })
       }
       .width('100%')
-      .height(30)
-      .padding({ left: 10, right: 8 })
 
-      List({ space: 2 }) {
-        ForEach(this.items, (item: PaperItem) => {
-          ListItem() {
-            Row({ space: 6 }) {
-              Checkbox({ name: item.id, group: 'papertodo' })
-                .select(item.done)
-                .width(24)
-                .height(24)
-                .onChange((checked: boolean): void => this.setTodoDone(item.id, checked))
-
-              TextInput({ text: item.text, placeholder: '待办事项' })
-                .layoutWeight(1)
-                .height(this.todoRowHeight() - 6)
-                .fontSize(this.todoFontSize())
-                .fontColor(item.done ? this.mutedColor() : this.textColor())
-                .placeholderColor(this.mutedColor())
-                .backgroundColor(Color.Transparent)
-                .padding(0)
-                .onChange((value: string): void => this.updateTodoText(item.id, value))
-                .onSubmit((): void => this.insertTodoAfter(item.id))
-
-              Text('≡')
-                .width(26)
-                .height(this.todoRowHeight() - 4)
-                .fontSize(16)
-                .fontColor(this.mutedColor())
-                .textAlign(TextAlign.Center)
-                .gesture(
-                  PanGesture({ direction: PanDirection.Vertical })
-                    .onActionStart((): void => this.beginTodoDrag(item.id))
-                    .onActionUpdate((event: GestureEvent): void => this.updateTodoDrag(event))
-                    .onActionEnd((): void => this.endTodoDrag())
-                )
-
-              Button('×')
-                .width(24)
+      if (this.notePapers().length === 0) {
+        Row() {
+          Text('还没有笔记纸')
+            .fontSize(10)
+            .fontColor(this.mutedColor())
+          Blank()
+          Button('新建笔记')
+            .height(26)
+            .fontSize(9)
+            .onClick((): void => this.createPaper(PAPER_TYPE_NOTE))
+        }
+        .width('100%')
+      } else {
+        Scroll() {
+          Row({ space: 4 }) {
+            ForEach(this.notePapers(), (note: PaperData) => {
+              Button(this.noteTitle(note))
                 .height(28)
-                .fontSize(12)
-                .fontColor(this.mutedColor())
-                .backgroundColor(Color.Transparent)
-                .onClick((): void => this.deleteTodo(item.id))
-            }
-            .width('100%')
-            .height(this.todoRowHeight())
-            .padding({ left: 8, right: 4 })
+                .fontSize(9)
+                .onClick((): void => this.setTodoNoteLink(this.linkPickerTodoId, note.id))
+            }, (note: PaperData): string => note.id)
           }
-        }, (item: PaperItem): string => item.id)
+        }
+        .width('100%')
+        .scrollable(ScrollDirection.Horizontal)
+        .scrollBar(BarState.Off)
       }
-      .layoutWeight(1)
-      .width('100%')
-      .scrollBar(BarState.Off)
+    }
+    .width('100%')
+    .padding({ left: 8, right: 8, top: 6, bottom: 6 })
+    .backgroundColor(this.inputColor())
+    .border({ width: 1, color: this.paperBorderColor() })
+  }
 
+  @Builder
+  private TodoBottomArea() {
+    if (this.todoDragging) {
+      Row() {
+        Text(this.todoDragDeleteArmed ? '松开删除' : '拖到这里删除')
+          .fontSize(12)
+          .fontColor(this.todoDragDeleteArmed ? '#FFFFFF' : '#B42318')
+      }
+      .width('100%')
+      .height(42)
+      .justifyContent(FlexAlign.Center)
+      .backgroundColor(this.todoDragDeleteArmed ? '#B42318' : this.inputColor())
+      .border({ width: 1, color: '#B42318' })
+      .borderRadius(8)
+      .margin({ left: 8, right: 8, bottom: 8 })
+    } else {
       Row({ space: 6 }) {
         TextInput({ text: this.draft, placeholder: '添加待办；可粘贴多行' })
           .layoutWeight(1)
@@ -1061,6 +1380,110 @@ struct PaperDesktop {
       .width('100%')
       .padding({ left: 8, right: 8, bottom: 8 })
     }
+  }
+
+  @Builder
+  private TodoBody() {
+    Column() {
+      Row() {
+        Text(this.completedCount().toString() + '/' + this.items.length.toString())
+          .fontSize(11)
+          .fontColor(this.mutedColor())
+        Blank()
+        Button('清已完成')
+          .height(28)
+          .fontSize(10)
+          .fontColor(this.mutedColor())
+          .backgroundColor(Color.Transparent)
+          .onClick((): void => this.clearCompleted())
+      }
+      .width('100%')
+      .height(30)
+      .padding({ left: 10, right: 8 })
+
+      List({ space: 2 }) {
+        ForEach(this.items, (item: PaperItem) => {
+          ListItem() {
+            Row({ space: 4 }) {
+              Checkbox({ name: item.id, group: 'papertodo' })
+                .select(item.done)
+                .width(24)
+                .height(24)
+                .onChange((checked: boolean): void => this.setTodoDone(item.id, checked))
+
+              TextInput({ text: item.text, placeholder: '待办事项' })
+                .id('todo-input-' + item.id)
+                .layoutWeight(1)
+                .height(this.todoRowHeight() - 6)
+                .fontSize(this.todoFontSize())
+                .fontColor(item.done ? this.mutedColor() : this.textColor())
+                .placeholderColor(this.mutedColor())
+                .backgroundColor(Color.Transparent)
+                .padding(0)
+                .decoration({
+                  type: item.done ? TextDecorationType.LineThrough : TextDecorationType.None,
+                  color: this.mutedColor()
+                })
+                .onChange((value: string): void => this.updateTodoText(item.id, value))
+                .onSubmit((): void => this.insertTodoAfter(item.id))
+                .onKeyEvent((event?: KeyEvent): void => this.handleTodoKey(item.id, event))
+
+              if (this.enableTodoNoteLinks) {
+                Button(this.linkButtonLabel(item))
+                  .constraintSize({ minWidth: 28, maxWidth: this.showLinkedNoteName ? 88 : 28 })
+                  .height(28)
+                  .fontSize(9)
+                  .fontColor(this.linkedNote(item) !== null ? this.textColor() : this.mutedColor())
+                  .backgroundColor(Color.Transparent)
+                  .onClick((): void => this.activateLinkedNote(item))
+                if (item.linkedNoteId !== undefined) {
+                  Button('⌄')
+                    .width(20)
+                    .height(28)
+                    .fontSize(9)
+                    .fontColor(this.mutedColor())
+                    .backgroundColor(Color.Transparent)
+                    .onClick((): void => this.toggleLinkPicker(item.id))
+                }
+              }
+
+              Text('≡')
+                .width(24)
+                .height(this.todoRowHeight() - 4)
+                .fontSize(16)
+                .fontColor(this.todoDragId === item.id ? this.textColor() : this.mutedColor())
+                .textAlign(TextAlign.Center)
+                .gesture(
+                  PanGesture({ direction: PanDirection.Vertical })
+                    .onActionStart((): void => this.beginTodoDrag(item.id))
+                    .onActionUpdate((event: GestureEvent): void => this.updateTodoDrag(event))
+                    .onActionEnd((): void => this.endTodoDrag())
+                )
+
+              Button('×')
+                .width(24)
+                .height(28)
+                .fontSize(12)
+                .fontColor(this.mutedColor())
+                .backgroundColor(Color.Transparent)
+                .onClick((): void => this.deleteTodo(item.id))
+            }
+            .width('100%')
+            .height(this.todoRowHeight())
+            .padding({ left: 8, right: 4 })
+            .opacity(item.done ? 0.62 : 1)
+          }
+        }, (item: PaperItem): string => item.id)
+      }
+      .layoutWeight(1)
+      .width('100%')
+      .scrollBar(BarState.Off)
+
+      if (this.linkPickerTodoId.length > 0 && this.enableTodoNoteLinks) {
+        this.LinkPicker()
+      }
+      this.TodoBottomArea()
+    }
     .layoutWeight(1)
     .width('100%')
   }
@@ -1073,6 +1496,7 @@ struct PaperDesktop {
       Button('H').onClick((): void => this.appendMarkdown('## 标题'))
       Button('>').onClick((): void => this.appendMarkdown('> 引用'))
       Button('•').onClick((): void => this.appendMarkdown('- 列表'))
+      Button('☐').onClick((): void => this.appendMarkdown('- [ ] 任务'))
     }
     .width('100%')
     .height(34)
@@ -1084,7 +1508,7 @@ struct PaperDesktop {
     Column() {
       if (!this.isNoteBrowsing) {
         this.MarkdownToolbar()
-        TextArea({ text: this.content, placeholder: '写点什么…' })
+        TextArea({ text: this.content, placeholder: '写点什么…', controller: this.noteController })
           .layoutWeight(1)
           .width('100%')
           .fontSize(14)
@@ -1231,6 +1655,7 @@ struct PaperDesktop {
       .backgroundColor(this.paperColor())
       .border({ width: 1, color: this.paperBorderColor() })
       .borderRadius(14)
+      .onKeyEvent((event?: KeyEvent): void => this.handleRootKey(event))
     }
   }
 }
