@@ -9,8 +9,12 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { display, window } from '@kit.ArkUI';
 import {
-  CAPSULE_HEIGHT,
-  CAPSULE_WIDTH,
+  createCapsuleMetrics,
+  CapsuleMetrics,
+  edgeCapsuleHiddenX,
+  edgeCapsuleY
+} from '../common/CapsuleGeometry';
+import {
   PAPER_MIN_HEIGHT,
   PAPER_MIN_WIDTH,
   AppState,
@@ -121,17 +125,21 @@ export default class PaperAbility extends UIAbility {
       let y: number = paper.expandedY;
 
       if (paper.isCollapsed && state.useCapsuleMode) {
-        width = CAPSULE_WIDTH;
-        height = CAPSULE_HEIGHT;
+        const metrics: CapsuleMetrics = createCapsuleMetrics(
+          screen.width,
+          screen.height,
+          screen.densityPixels,
+          state.capsuleGap
+        );
+        width = metrics.widthPx;
+        height = metrics.heightPx;
         if (state.useDeepCapsuleMode) {
           const index: number = PaperStore.getCollapsedIndex(paper.id);
-          paper.capsuleX = Math.max(0, screen.width - CAPSULE_WIDTH);
-          paper.capsuleY = 20 + index * (CAPSULE_HEIGHT + state.capsuleGap);
-          x = paper.capsuleX + Math.round(CAPSULE_WIDTH * 0.45);
-          y = paper.capsuleY;
+          x = edgeCapsuleHiddenX(metrics);
+          y = edgeCapsuleY(index, metrics);
         } else {
-          paper.capsuleX = this.clamp(paper.capsuleX, 0, Math.max(0, screen.width - CAPSULE_WIDTH));
-          paper.capsuleY = this.clamp(paper.capsuleY, 0, Math.max(0, screen.height - CAPSULE_HEIGHT));
+          paper.capsuleX = this.clamp(paper.capsuleX, 0, Math.max(0, screen.width - metrics.widthPx));
+          paper.capsuleY = this.clamp(paper.capsuleY, 0, Math.max(0, screen.height - metrics.heightPx));
           x = paper.capsuleX;
           y = paper.capsuleY;
         }
