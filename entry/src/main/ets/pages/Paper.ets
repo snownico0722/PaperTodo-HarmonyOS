@@ -122,7 +122,7 @@ struct Paper {
     return this.isDark() ? '#AFA895' : '#746D5D';
   }
 
-  private borderColor(): string {
+  private paperBorderColor(): string {
     return this.isDark() ? '#565044' : '#D8CDA5';
   }
 
@@ -204,7 +204,8 @@ struct Paper {
       moduleName: 'entry',
       abilityName: 'PaperAbility',
       parameters: {
-        paperId: created.id
+        paperId: created.id,
+        paperCommand: 'show'
       }
     };
     this.hostContext().startAbility(want).catch((error: BusinessError): void => {
@@ -286,7 +287,7 @@ struct Paper {
     if (win === undefined) {
       return;
     }
-    const screen = display.getDefaultDisplaySync();
+    const screen: display.Display = display.getDefaultDisplaySync();
     const hidden: number = hovered ? 0 : Math.round(CAPSULE_WIDTH * 0.45);
     const targetX: number = screen.width - CAPSULE_WIDTH + hidden;
     const index: number = PaperStore.getCollapsedIndex(this.paperId);
@@ -526,7 +527,10 @@ struct Paper {
         .backgroundColor(Color.Transparent)
         .onClick((): void => this.toggleTopmost())
 
-      TextInput({ text: this.title, placeholder: this.paper !== null && this.paper.type === PAPER_TYPE_NOTE ? '笔记' : '待办' })
+      TextInput({
+        text: this.title,
+        placeholder: this.paper !== null && this.paper.type === PAPER_TYPE_NOTE ? '笔记' : '待办'
+      })
         .layoutWeight(1)
         .height(30)
         .fontSize(14)
@@ -640,7 +644,7 @@ struct Paper {
                 .fontSize(13)
                 .fontColor(item.done ? this.paperColor() : this.textColor())
                 .backgroundColor(item.done ? this.textColor() : Color.Transparent)
-                .border({ width: 1, color: this.borderColor() })
+                .border({ width: 1, color: this.paperBorderColor() })
                 .borderRadius(7)
                 .onClick((): void => this.toggleTodo(item.id))
 
@@ -689,9 +693,11 @@ struct Paper {
           .fontColor(this.textColor())
           .placeholderColor(this.mutedColor())
           .backgroundColor(this.inputColor())
-          .border({ width: 1, color: this.borderColor() })
+          .border({ width: 1, color: this.paperBorderColor() })
           .borderRadius(8)
-          .onChange((value: string): void => this.draft = value)
+          .onChange((value: string): void => {
+            this.draft = value;
+          })
           .onSubmit((): void => this.addDraftTodos())
         Button('+')
           .width(38)
@@ -757,7 +763,7 @@ struct Paper {
             ForEach(this.markdownLines, (line: MarkdownLine) => {
               if (line.kind === MD_KIND_RULE) {
                 Divider()
-                  .color(this.borderColor())
+                  .color(this.paperBorderColor())
                   .margin({ top: 6, bottom: 6 })
               } else if (line.kind === MD_KIND_HEADING) {
                 Text(line.text)
@@ -767,12 +773,11 @@ struct Paper {
                   .fontColor(this.textColor())
                   .margin({ top: 4, bottom: 2 })
               } else if (line.kind === MD_KIND_QUOTE) {
-                Text(line.text)
+                Text('│ ' + line.text)
                   .width('100%')
                   .fontSize(14)
                   .fontColor(this.mutedColor())
-                  .padding({ left: 10, top: 4, bottom: 4 })
-                  .border({ width: { left: 3 }, color: this.borderColor() })
+                  .padding({ left: 6, top: 4, bottom: 4 })
               } else if (line.kind === MD_KIND_CODE) {
                 Text(line.text)
                   .width('100%')
@@ -848,7 +853,7 @@ struct Paper {
     .height('100%')
     .padding({ left: 10, right: 8 })
     .backgroundColor(this.paperColor())
-    .border({ width: 1, color: this.borderColor() })
+    .border({ width: 1, color: this.paperBorderColor() })
     .borderRadius(22)
     .onHover((isHover: boolean): void => this.snapCapsule(isHover))
     .onClick((): void => this.setCollapsed(false))
@@ -866,7 +871,7 @@ struct Paper {
     } else {
       Column() {
         this.HeaderBar()
-        Divider().color(this.borderColor()).opacity(0.45)
+        Divider().color(this.paperBorderColor()).opacity(0.45)
         if (this.paper !== null && this.paper.type === PAPER_TYPE_NOTE) {
           this.NoteBody()
         } else {
@@ -877,7 +882,7 @@ struct Paper {
       .width('100%')
       .height('100%')
       .backgroundColor(this.paperColor())
-      .border({ width: 1, color: this.borderColor() })
+      .border({ width: 1, color: this.paperBorderColor() })
       .borderRadius(14)
     }
   }
