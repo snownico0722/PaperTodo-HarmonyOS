@@ -1,0 +1,67 @@
+name: HarmonyOS Build
+
+on:
+  push:
+    branches:
+      - main
+      - 'ci/**'
+      - 'feature/**'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build unsigned HAP
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Cache HarmonyOS Command Line Tools
+        id: cache-tools
+        uses: actions/cache@v4
+        with:
+          path: command-line-tools
+          key: ${{ runner.os }}-harmonyos-cli-6.1.0.816
+
+      - name: Download HarmonyOS Command Line Tools
+        if: steps.cache-tools.outputs.cache-hit != 'true'
+        run: |
+          curl --fail --location --retry 3 \
+            --output tools.zip \
+            https://github.com/Okysu/harmony-auto-build/releases/download/commandline-tools-linux-x64-6.1.0.816/commandline-tools-linux-x64-6.1.0.816.zip
+          unzip -q tools.zip
+          rm tools.zip
+
+      - name: Setup HarmonyOS build environment
+        shell: bash
+        run: |
+          TOOLS_DIR="$GITHUB_WORKSPACE/command-line-tools"
+          echo "hwsdk.dir=$TOOLS_DIR/sdk" > local.properties
+          echo "$TOOLS_DIR/bin" >> "$GITHUB_PATH"
+          echo "OHPM_HOME=$TOOLS_DIR/ohpm" >> "$GITHUB_ENV"
+          echo "HOS_SDK_HOME=$TOOLS_DIR/sdk" >> "$GITHUB_ENV"
+          chmod -R +x "$TOOLS_DIR/bin"
+
+      - name: Install dependencies
+        run: ohpm install
+
+      - name: Build HAP
+        run: hvigorw assembleHap --mode module -p product=default -p buildMode=debug --no-daemon
+
+      - name: Upload unsigned HAP
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: papertodo-harmonyos-debug
+          if-no-files-found: error
+          path: '**/build/**/outputs/**/*.hap'
