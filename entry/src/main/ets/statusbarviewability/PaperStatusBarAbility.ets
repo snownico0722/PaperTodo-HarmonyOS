@@ -1,4 +1,4 @@
-import { StatusBarViewExtensionAbility } from '@kit.DeskTopExtensionKit';
+import { StatusBarViewExtensionAbility } from '@kit.StatusBarExtensionKit';
 import { UIExtensionContentSession, Want } from '@kit.AbilityKit';
 
 export default class PaperStatusBarAbility extends StatusBarViewExtensionAbility {
