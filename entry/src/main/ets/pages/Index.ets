@@ -111,9 +111,13 @@ struct Index {
         paperCommand: command
       }
     };
-    this.hostContext().startAbility(want).catch((error: BusinessError): void => {
-      this.statusMessage = '打开纸片失败：' + error.message;
-    });
+    try {
+      this.hostContext().startAbility(want).catch((error: BusinessError): void => {
+        this.statusMessage = '打开纸片失败：' + error.message;
+      });
+    } catch (error) {
+      this.statusMessage = '打开纸片失败：' + String(error);
+    }
   }
 
   private isPaperOpen(id: string): boolean {
@@ -271,26 +275,39 @@ struct Index {
 
   private restoreBackup(): void {
     PaperStore.flushNow();
+    if (!PaperStore.hasValidBackup()) {
+      this.statusMessage = '没有可恢复的有效备份';
+      return;
+    }
+
     const current: PaperData[] = PaperStore.listPapers();
     for (let i: number = 0; i < current.length; i++) {
       if (this.isPaperOpen(current[i].id)) {
         this.startPaper(current[i].id, 'close');
       }
     }
-    if (!PaperStore.restoreBackup()) {
-      this.statusMessage = '没有可恢复的有效备份';
-      return;
-    }
-    this.statusMessage = '已恢复上一份成功保存的自动备份';
-    this.refresh();
+    this.statusMessage = '正在切换到上一份自动备份…';
+
     setTimeout((): void => {
+      if (!PaperStore.restoreBackup()) {
+        this.statusMessage = '恢复备份失败，当前数据未切换';
+        for (let i: number = 0; i < current.length; i++) {
+          if (current[i].isVisible) {
+            this.startPaper(current[i].id, 'show');
+          }
+        }
+        return;
+      }
+
+      this.statusMessage = '已恢复上一份成功保存的自动备份';
+      this.refresh();
       const restored: PaperData[] = PaperStore.listPapers();
       for (let i: number = 0; i < restored.length; i++) {
         if (restored[i].isVisible) {
           this.startPaper(restored[i].id, 'show');
         }
       }
-    }, 180);
+    }, 220);
   }
 
   private paperTitle(paper: PaperData): string {
