@@ -6,8 +6,6 @@
     "mainElement": "EntryAbility",
     "srcEntry": "./ets/abilitystage/PaperTodoAbilityStage.ets",
     "deviceTypes": [
-      "phone",
-      "tablet",
       "2in1"
     ],
     "deliveryWithInstall": true,
