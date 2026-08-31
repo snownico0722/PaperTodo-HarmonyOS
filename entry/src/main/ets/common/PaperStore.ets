@@ -71,9 +71,6 @@ class PaperStoreImpl {
       }
     }
 
-    // A previous Preferences acquisition may have failed temporarily. Once a later
-    // UIAbility acquires the store successfully, reload instead of keeping the safe
-    // in-memory empty state for the rest of the process lifetime.
     if (acquiredStoreNow && this.storageBlocked && this.state !== null && !this.state.initialized) {
       this.state = null;
       this.persistedJson = '';
@@ -116,6 +113,21 @@ class PaperStoreImpl {
 
   hasStorageError(): boolean {
     return this.storageBlocked;
+  }
+
+  hasValidBackup(): boolean {
+    if (this.store === null) {
+      return false;
+    }
+    try {
+      const backup: string = this.store.getSync(BACKUP_KEY, '') as string;
+      if (this.hasFutureSchema(backup)) {
+        return false;
+      }
+      return this.parseState(backup) !== null;
+    } catch (error) {
+      return false;
+    }
   }
 
   createPaper(type: string, sourcePaperId: string = ''): PaperData | null {
@@ -163,21 +175,23 @@ class PaperStoreImpl {
     if (this.storageBlocked) {
       return;
     }
-    this.normalizePaper(paper, paper.edgeOrder);
-    paper.updatedAt = Date.now();
     const papers: PaperData[] = this.ensureState().papers;
+    let foundIndex: number = -1;
     for (let i: number = 0; i < papers.length; i++) {
       if (papers[i].id === paper.id) {
-        papers[i] = paper;
-        this.requestSave(immediate);
-        return;
+        foundIndex = i;
+        break;
       }
     }
-    if (papers.length < MAX_PAPERS) {
-      papers.push(paper);
-      this.normalizeEdgeOrders(this.ensureState());
-      this.requestSave(immediate);
+    if (foundIndex < 0) {
+      console.warn('PaperTodo ignored update for unknown/deleted paper: ' + paper.id);
+      return;
     }
+
+    this.normalizePaper(paper, paper.edgeOrder);
+    paper.updatedAt = Date.now();
+    papers[foundIndex] = paper;
+    this.requestSave(immediate);
   }
 
   deletePaper(id: string): void {
@@ -202,11 +216,15 @@ class PaperStoreImpl {
 
   setPaperVisible(id: string, visible: boolean): void {
     const paper: PaperData | null = this.getPaper(id);
-    if (paper === null) {
+    if (paper === null || paper.isVisible === visible) {
       return;
     }
     paper.isVisible = visible;
     this.updatePaper(paper, true);
+    this.notifyRevision();
+  }
+
+  notifyLayoutChanged(): void {
     this.notifyRevision();
   }
 
@@ -219,11 +237,7 @@ class PaperStoreImpl {
 
   setMarkdownMode(mode: string): void {
     const state: AppState = this.ensureState();
-    if (mode === MARKDOWN_OFF || mode === MARKDOWN_BASIC) {
-      state.markdownRenderMode = mode;
-    } else {
-      state.markdownRenderMode = MARKDOWN_ENHANCED;
-    }
+    state.markdownRenderMode = mode === MARKDOWN_OFF || mode === MARKDOWN_BASIC ? mode : MARKDOWN_ENHANCED;
     this.requestSave(true);
     this.publishSettings();
   }
@@ -295,7 +309,6 @@ class PaperStoreImpl {
     const state: AppState = this.ensureState();
     const orderedAll: PaperData[] = state.papers.slice();
     this.sortByEdgeOrder(orderedAll);
-
     const queueWithoutTarget: PaperData[] = [];
     for (let i: number = 0; i < orderedAll.length; i++) {
       const paper: PaperData = orderedAll[i];
@@ -327,8 +340,9 @@ class PaperStoreImpl {
     }
     insertAt = Math.max(0, Math.min(insertAt, withoutTarget.length));
     withoutTarget.splice(insertAt, 0, target);
-    state.papers = withoutTarget;
-    this.normalizeEdgeOrders(state);
+    for (let i: number = 0; i < withoutTarget.length; i++) {
+      withoutTarget[i].edgeOrder = i;
+    }
     this.requestSave(false);
     this.notifyRevision();
   }
@@ -343,6 +357,10 @@ class PaperStoreImpl {
     }
     try {
       const backup: string = this.store.getSync(BACKUP_KEY, '') as string;
+      if (this.hasFutureSchema(backup)) {
+        console.error('PaperTodo backup schema is newer than this build; refusing downgrade restore.');
+        return false;
+      }
       const restored: AppState | null = this.parseState(backup);
       if (restored === null) {
         return false;
@@ -455,13 +473,7 @@ class PaperStoreImpl {
 
   private loadInitialState(): LoadResult {
     if (this.store === null) {
-      return {
-        state: this.createSafeEmptyState(),
-        persistedJson: '',
-        shouldPersist: false,
-        blocked: true,
-        preserveBackup: false
-      };
+      return this.blockedLoad('', false);
     }
 
     let raw: string = '';
@@ -471,13 +483,7 @@ class PaperStoreImpl {
       backup = this.store.getSync(BACKUP_KEY, '') as string;
     } catch (error) {
       console.error('PaperTodo state read failed: ' + String(error));
-      return {
-        state: this.createSafeEmptyState(),
-        persistedJson: '',
-        shouldPersist: false,
-        blocked: true,
-        preserveBackup: false
-      };
+      return this.blockedLoad('', false);
     }
 
     if (raw.length === 0) {
@@ -490,10 +496,12 @@ class PaperStoreImpl {
           preserveBackup: false
         };
       }
-
+      if (this.hasFutureSchema(backup)) {
+        console.error('PaperTodo backup schema is newer than this build; refusing first-run overwrite.');
+        return this.blockedLoad('', true);
+      }
       const recovered: AppState | null = this.parseState(backup);
       if (recovered !== null) {
-        // Force a new main state write while keeping the only known-good backup intact.
         return {
           state: recovered,
           persistedJson: '',
@@ -502,15 +510,13 @@ class PaperStoreImpl {
           preserveBackup: true
         };
       }
-
       console.error('PaperTodo main state is empty but backup exists and is invalid; refusing first-run overwrite.');
-      return {
-        state: this.createSafeEmptyState(),
-        persistedJson: '',
-        shouldPersist: false,
-        blocked: true,
-        preserveBackup: true
-      };
+      return this.blockedLoad('', true);
+    }
+
+    if (this.hasFutureSchema(raw)) {
+      console.error('PaperTodo state schema is newer than this build; refusing destructive downgrade.');
+      return this.blockedLoad(raw, true);
     }
 
     const parsed: AppState | null = this.parseState(raw);
@@ -526,10 +532,12 @@ class PaperStoreImpl {
     }
 
     if (backup.length > 0) {
+      if (this.hasFutureSchema(backup)) {
+        console.error('PaperTodo backup schema is newer than this build; refusing destructive downgrade.');
+        return this.blockedLoad(raw, true);
+      }
       const recovered: AppState | null = this.parseState(backup);
       if (recovered !== null) {
-        // The main payload is invalid. Do not rotate it into BACKUP_KEY and destroy
-        // the only valid recovery point.
         return {
           state: recovered,
           persistedJson: '',
@@ -541,13 +549,29 @@ class PaperStoreImpl {
     }
 
     console.error('PaperTodo main state and backup are both invalid; refusing to overwrite stored data.');
+    return this.blockedLoad(raw, true);
+  }
+
+  private blockedLoad(persistedJson: string, preserveBackup: boolean): LoadResult {
     return {
       state: this.createSafeEmptyState(),
-      persistedJson: raw,
+      persistedJson: persistedJson,
       shouldPersist: false,
       blocked: true,
-      preserveBackup: true
+      preserveBackup: preserveBackup
     };
+  }
+
+  private hasFutureSchema(raw: string): boolean {
+    if (raw.length === 0) {
+      return false;
+    }
+    try {
+      const parsed: AppState = JSON.parse(raw) as AppState;
+      return Number.isFinite(parsed.schemaVersion) && parsed.schemaVersion > SCHEMA_VERSION;
+    } catch (error) {
+      return false;
+    }
   }
 
   private parseState(raw: string): AppState | null {
@@ -556,12 +580,11 @@ class PaperStoreImpl {
     }
     try {
       const parsed: AppState = JSON.parse(raw) as AppState;
-      if (parsed.papers === undefined || !Array.isArray(parsed.papers)) {
+      if (!Array.isArray(parsed.papers)) {
         return null;
       }
       const sourceVersion: number = Number.isFinite(parsed.schemaVersion) ? parsed.schemaVersion : 1;
       if (sourceVersion > SCHEMA_VERSION) {
-        console.error('PaperTodo state schema is newer than this build; refusing destructive downgrade normalization.');
         return null;
       }
       this.normalizeState(parsed);
@@ -596,8 +619,14 @@ class PaperStoreImpl {
       state.useDeepCapsuleMode = true;
     }
 
+    const usedPaperIds: string[] = [];
     for (let i: number = 0; i < state.papers.length; i++) {
-      this.normalizePaper(state.papers[i], i);
+      const paper: PaperData = state.papers[i];
+      this.normalizePaper(paper, i);
+      if (this.stringIndexOf(usedPaperIds, paper.id) >= 0) {
+        paper.id = this.nextId('paper');
+      }
+      usedPaperIds.push(paper.id);
     }
     this.normalizeEdgeOrders(state);
   }
@@ -614,9 +643,6 @@ class PaperStoreImpl {
     }
     paper.title = paper.title.slice(0, TITLE_MAX_LENGTH);
 
-    // Schemas <=2 used these same numeric design values without declaring a unit.
-    // Treat them as logical vp from schema 3 onward; this fixes the former mixed
-    // vp/px model without multiplying already persisted numbers a second time.
     const legacyX: number = paper.x !== undefined && Number.isFinite(paper.x) ? paper.x : 120;
     const legacyY: number = paper.y !== undefined && Number.isFinite(paper.y) ? paper.y : 120;
     const legacyWidth: number = paper.width !== undefined && Number.isFinite(paper.width) ? paper.width :
@@ -658,11 +684,13 @@ class PaperStoreImpl {
     if (!Array.isArray(paper.items)) {
       paper.items = [];
     }
+    const usedItemIds: string[] = [];
     for (let i: number = 0; i < paper.items.length; i++) {
       const item: PaperItem = paper.items[i];
-      if (typeof item.id !== 'string' || item.id.length === 0) {
+      if (typeof item.id !== 'string' || item.id.length === 0 || this.stringIndexOf(usedItemIds, item.id) >= 0) {
         item.id = this.nextId('item');
       }
+      usedItemIds.push(item.id);
       if (typeof item.text !== 'string') {
         item.text = '';
       }
@@ -706,7 +734,6 @@ class PaperStoreImpl {
     for (let i: number = 0; i < ordered.length; i++) {
       ordered[i].edgeOrder = i;
     }
-    state.papers = ordered;
   }
 
   private sortByEdgeOrder(papers: PaperData[]): void {
@@ -724,6 +751,15 @@ class PaperStoreImpl {
   private indexOfPaper(papers: PaperData[], id: string): number {
     for (let i: number = 0; i < papers.length; i++) {
       if (papers[i].id === id) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  private stringIndexOf(values: string[], value: string): number {
+    for (let i: number = 0; i < values.length; i++) {
+      if (values[i] === value) {
         return i;
       }
     }
