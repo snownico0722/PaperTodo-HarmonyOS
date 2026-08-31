@@ -27,9 +27,6 @@ jobs:
     name: Package APP and HAP
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      # One-shot switch. Disable immediately after the first signed cloud-test artifact succeeds.
-      ONE_SHOT_TEST_SIGNING: 'true'
 
     steps:
       - name: Checkout
@@ -40,7 +37,7 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Verify AGC Service Account
+      - name: Verify AGC developer Service Account
         shell: bash
         env:
           AGC_SERVICE_ACCOUNT_JSON: ${{ secrets.AGC_SERVICE_ACCOUNT_JSON }}
@@ -49,73 +46,39 @@ jobs:
           set -euo pipefail
 
           if [[ -z "${AGC_SERVICE_ACCOUNT_JSON:-}" || -z "${AGC_APP_ID:-}" ]]; then
-            echo 'AGC Service Account credentials are unavailable; unsigned release build will continue.'
-            echo 'AGC_PROVISIONING_AVAILABLE=false' >> "$GITHUB_ENV"
+            echo 'AGC credentials are unavailable; release build will continue unsigned.'
             exit 0
           fi
 
           JWT="$(node <<'NODE'
           const crypto = require('crypto');
-          const EXPECTED_AUD = 'https://oauth-login.cloud.huawei.com/oauth2/v3/token';
-          const EXPECTED_PROJECT_ID = '101653523864902953';
-
-          function base64url(value) {
-            return Buffer.from(JSON.stringify(value)).toString('base64url');
-          }
-
-          const raw = process.env.AGC_SERVICE_ACCOUNT_JSON;
-          let account;
-          try {
-            account = JSON.parse(raw);
-          } catch (error) {
-            console.error('AGC_SERVICE_ACCOUNT_JSON is not valid JSON.');
-            process.exit(2);
-          }
-
+          const account = JSON.parse(process.env.AGC_SERVICE_ACCOUNT_JSON);
           for (const key of ['key_id', 'private_key', 'sub_account']) {
             if (!account[key]) {
-              console.error(`AGC Service Account JSON is missing ${key}.`);
-              process.exit(2);
+              throw new Error(`AGC Service Account JSON is missing ${key}`);
             }
           }
-
-          const projectId = account.project_id === undefined || account.project_id === null ? '' : String(account.project_id);
-          if (projectId.length === 0) {
-            console.error('AGC developer-level Service Account detected.');
-          } else if (projectId === EXPECTED_PROJECT_ID) {
-            console.error('AGC project-level Service Account is bound to PaperTodo.');
-          } else {
-            console.error('AGC project-level Service Account belongs to a different project than PaperTodo.');
-            process.exit(2);
-          }
-
           const now = Math.floor(Date.now() / 1000);
-          const header = { kid: account.key_id, typ: 'JWT', alg: 'PS256' };
-          const payload = {
+          const b64 = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
+          const input = `${b64({ kid: account.key_id, typ: 'JWT', alg: 'PS256' })}.${b64({
             iss: account.sub_account,
-            aud: EXPECTED_AUD,
+            aud: 'https://oauth-login.cloud.huawei.com/oauth2/v3/token',
             iat: now,
             exp: now + 3600
-          };
-          const signingInput = `${base64url(header)}.${base64url(payload)}`;
-          const signature = crypto.sign('sha256', Buffer.from(signingInput), {
+          })}`;
+          const signature = crypto.sign('sha256', Buffer.from(input), {
             key: account.private_key,
             padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
             saltLength: 32
           });
-          process.stdout.write(`${signingInput}.${signature.toString('base64url')}`);
+          process.stdout.write(`${input}.${signature.toString('base64url')}`);
           NODE
-          )" || {
-            echo 'Failed to generate AGC Service Account JWT; unsigned release build will continue.' >&2
-            echo 'AGC_PROVISIONING_AVAILABLE=false' >> "$GITHUB_ENV"
-            exit 0
-          }
-
+          )"
           echo "::add-mask::$JWT"
 
-          PROFILE_BODY="$(mktemp)"
-          PROFILE_STATUS="$(curl --silent --show-error \
-            --output "$PROFILE_BODY" \
+          BODY="$(mktemp)"
+          STATUS="$(curl --silent --show-error \
+            --output "$BODY" \
             --write-out '%{http_code}' \
             --request GET \
             --header "Authorization: Bearer $JWT" \
@@ -123,29 +86,20 @@ jobs:
             --header 'Content-Type: application/json' \
             'https://connect-api.cloud.huawei.com/api/publish/v3/provision/list?fromRecCount=1&maxReqCount=10')"
 
-          PROFILE_RESPONSE="$(cat "$PROFILE_BODY")"
-          rm -f "$PROFILE_BODY"
-
-          if [[ "$PROFILE_STATUS" != '200' ]]; then
-            echo "AGC Provisioning API returned HTTP $PROFILE_STATUS; unsigned release build will continue." >&2
-            if jq -e . >/dev/null 2>&1 <<<"$PROFILE_RESPONSE"; then
-              jq '{ret: (.ret // null), code: (.code // null), message: (.message // .msg // null)}' \
-                <<<"$PROFILE_RESPONSE" >&2
-            fi
-            echo 'AGC_PROVISIONING_AVAILABLE=false' >> "$GITHUB_ENV"
+          if [[ "$STATUS" != '200' ]]; then
+            echo "AGC Provisioning read-only probe returned HTTP $STATUS; release build will continue unsigned." >&2
+            rm -f "$BODY"
             exit 0
           fi
 
-          RET_CODE="$(jq -r '.ret.code // -1' <<<"$PROFILE_RESPONSE")"
+          RET_CODE="$(jq -r '.ret.code // -1' "$BODY")"
+          TOTAL_COUNT="$(jq -r '.totalCount // 0' "$BODY")"
+          rm -f "$BODY"
           if [[ "$RET_CODE" != '0' ]]; then
-            jq '{ret: .ret}' <<<"$PROFILE_RESPONSE" >&2
-            echo 'AGC_PROVISIONING_AVAILABLE=false' >> "$GITHUB_ENV"
+            echo "AGC Provisioning read-only probe returned ret.code=$RET_CODE; release build will continue unsigned." >&2
             exit 0
           fi
-
-          TOTAL_COUNT="$(jq -r '.totalCount // 0' <<<"$PROFILE_RESPONSE")"
-          echo "AGC Provisioning API authentication succeeded; visible profiles: $TOTAL_COUNT"
-          echo 'AGC_PROVISIONING_AVAILABLE=true' >> "$GITHUB_ENV"
+          echo "AGC developer Service Account verified; visible profiles: $TOTAL_COUNT"
 
       - name: Cache HarmonyOS Command Line Tools
         id: cache-tools
@@ -198,13 +152,9 @@ jobs:
 
           VERSION="$(printf '%s' "$VERSION" | tr -cs 'A-Za-z0-9._-' '-')"
           PACKAGE_BASENAME="PaperTodo-HarmonyOS-${VERSION}-${BUILD_MODE}-unsigned"
-          SIGNED_PACKAGE_BASENAME="PaperTodo-HarmonyOS-${VERSION}-${BUILD_MODE}-signed-test"
 
           echo "BUILD_MODE=$BUILD_MODE" >> "$GITHUB_ENV"
-          echo "SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
           echo "PACKAGE_BASENAME=$PACKAGE_BASENAME" >> "$GITHUB_ENV"
-          echo "SIGNED_PACKAGE_BASENAME=$SIGNED_PACKAGE_BASENAME" >> "$GITHUB_ENV"
-          echo "ARTIFACT_NAME=$PACKAGE_BASENAME" >> "$GITHUB_ENV"
           echo "Build mode: $BUILD_MODE"
           echo "Package: $PACKAGE_BASENAME"
 
@@ -229,208 +179,30 @@ jobs:
 
           if [[ ${#APPS[@]} -eq 0 ]]; then
             echo 'assembleApp succeeded, but no .app package was found.' >&2
-            find . -type f -path '*/build/*' \
-              \( -name '*.app' -o -name '*.hap' \) \
-              -print >&2
             exit 1
           fi
 
           OUTPUTS=("${APPS[@]}" "${HAPS[@]}")
           printf 'Collected outputs:\n'
           printf '  %s\n' "${OUTPUTS[@]}"
-
           for file in "${OUTPUTS[@]}"; do
             cp "$file" package/payload/
           done
 
-      - name: Create one-shot AGC signed test APP
-        if: env.ONE_SHOT_TEST_SIGNING == 'true' && env.AGC_PROVISIONING_AVAILABLE == 'true' && env.BUILD_MODE == 'release'
-        shell: bash
-        env:
-          AGC_SERVICE_ACCOUNT_JSON: ${{ secrets.AGC_SERVICE_ACCOUNT_JSON }}
-          AGC_APP_ID: ${{ secrets.AGC_APP_ID }}
-        run: |
-          set -euo pipefail
-
-          SIGN_DIR="$RUNNER_TEMP/papertodo-signing"
-          mkdir -p "$SIGN_DIR"
-          KEY_ALIAS='papertodo_test_release'
-          KEYSTORE_PASSWORD="Pt-$(openssl rand -hex 16)-9A"
-          echo "::add-mask::$KEYSTORE_PASSWORD"
-
-          KEYSTORE="$SIGN_DIR/papertodo-test.p12"
-          CSR_FILE="$SIGN_DIR/papertodo-test.csr"
-          CERT_FILE="$SIGN_DIR/papertodo-test.cer"
-          PROFILE_FILE="$SIGN_DIR/papertodo-test.p7b"
-
-          keytool -genkeypair \
-            -alias "$KEY_ALIAS" \
-            -keyalg EC \
-            -groupname secp256r1 \
-            -sigalg SHA256withECDSA \
-            -dname "C=CN,O=PaperTodo,OU=GitHub CI,CN=$KEY_ALIAS" \
-            -keystore "$KEYSTORE" \
-            -storetype pkcs12 \
-            -validity 9125 \
-            -storepass "$KEYSTORE_PASSWORD" \
-            -keypass "$KEYSTORE_PASSWORD" \
-            -noprompt
-
-          keytool -certreq \
-            -alias "$KEY_ALIAS" \
-            -sigalg SHA256withECDSA \
-            -keystore "$KEYSTORE" \
-            -storetype pkcs12 \
-            -storepass "$KEYSTORE_PASSWORD" \
-            -file "$CSR_FILE"
-
-          JWT="$(node <<'NODE'
-          const crypto = require('crypto');
-          const account = JSON.parse(process.env.AGC_SERVICE_ACCOUNT_JSON);
-          const now = Math.floor(Date.now() / 1000);
-          const b64 = (v) => Buffer.from(JSON.stringify(v)).toString('base64url');
-          const input = `${b64({ kid: account.key_id, typ: 'JWT', alg: 'PS256' })}.${b64({
-            iss: account.sub_account,
-            aud: 'https://oauth-login.cloud.huawei.com/oauth2/v3/token',
-            iat: now,
-            exp: now + 3600
-          })}`;
-          const signature = crypto.sign('sha256', Buffer.from(input), {
-            key: account.private_key,
-            padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
-            saltLength: 32
-          });
-          process.stdout.write(`${input}.${signature.toString('base64url')}`);
-          NODE
-          )"
-          echo "::add-mask::$JWT"
-
-          NAME_SUFFIX="${SOURCE_SHA:0:7}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          CERT_NAME="PaperTodo-Test-$NAME_SUFFIX"
-          PROFILE_NAME="PaperTodo-Test-$NAME_SUFFIX"
-
-          CERT_REQUEST="$(jq -n --rawfile csr "$CSR_FILE" --arg certName "$CERT_NAME" \
-            '{csr: $csr, certName: $certName, certType: 2}')"
-          CERT_RESPONSE_FILE="$SIGN_DIR/cert-response.json"
-          CERT_STATUS="$(curl --silent --show-error \
-            --output "$CERT_RESPONSE_FILE" \
-            --write-out '%{http_code}' \
-            --request POST \
-            --header "Authorization: Bearer $JWT" \
-            --header 'Content-Type: application/json' \
-            --data "$CERT_REQUEST" \
-            'https://connect-api.cloud.huawei.com/api/publish/v3/cert')"
-
-          if [[ "$CERT_STATUS" != '200' ]]; then
-            echo "Release certificate request failed with HTTP $CERT_STATUS." >&2
-            jq '{ret: (.ret // null), code: (.code // null), message: (.message // .msg // null)}' "$CERT_RESPONSE_FILE" >&2 || true
-            exit 1
-          fi
-          CERT_RET="$(jq -r '.ret.code // -1' "$CERT_RESPONSE_FILE")"
-          if [[ "$CERT_RET" != '0' ]]; then
-            jq '{ret: .ret}' "$CERT_RESPONSE_FILE" >&2
-            exit 1
-          fi
-
-          CERT_ID="$(jq -r '.certInfo.id // empty' "$CERT_RESPONSE_FILE")"
-          CERT_URL="$(jq -r '.certInfo.certDownloadUrl // empty' "$CERT_RESPONSE_FILE")"
-          if [[ -z "$CERT_ID" || -z "$CERT_URL" ]]; then
-            echo 'AGC certificate response did not contain certificate ID/download URL.' >&2
-            exit 1
-          fi
-          curl --fail --location --silent --show-error "$CERT_URL" --output "$CERT_FILE"
-          echo "Created AGC release certificate: $CERT_NAME"
-
-          PROFILE_REQUEST="$(jq -n \
-            --arg provisionName "$PROFILE_NAME" \
-            --arg certId "$CERT_ID" \
-            --arg appId "$AGC_APP_ID" \
-            '{provisionName: $provisionName, provisionType: 2, certId: $certId, appId: $appId}')"
-          PROFILE_RESPONSE_FILE="$SIGN_DIR/profile-response.json"
-          PROFILE_STATUS="$(curl --silent --show-error \
-            --output "$PROFILE_RESPONSE_FILE" \
-            --write-out '%{http_code}' \
-            --request POST \
-            --header "Authorization: Bearer $JWT" \
-            --header 'Content-Type: application/json' \
-            --data "$PROFILE_REQUEST" \
-            'https://connect-api.cloud.huawei.com/api/publish/v3/provision')"
-
-          if [[ "$PROFILE_STATUS" != '200' ]]; then
-            echo "Release profile request failed with HTTP $PROFILE_STATUS." >&2
-            jq '{ret: (.ret // null), code: (.code // null), message: (.message // .msg // null)}' "$PROFILE_RESPONSE_FILE" >&2 || true
-            exit 1
-          fi
-          PROFILE_RET="$(jq -r '.ret.code // -1' "$PROFILE_RESPONSE_FILE")"
-          if [[ "$PROFILE_RET" != '0' ]]; then
-            jq '{ret: .ret}' "$PROFILE_RESPONSE_FILE" >&2
-            exit 1
-          fi
-
-          PROFILE_URL="$(jq -r '.provisionInfo.provisionDownloadUrl // empty' "$PROFILE_RESPONSE_FILE")"
-          if [[ -z "$PROFILE_URL" ]]; then
-            echo 'AGC profile response did not contain a download URL.' >&2
-            exit 1
-          fi
-          curl --fail --location --silent --show-error "$PROFILE_URL" --output "$PROFILE_FILE"
-          echo "Created AGC release profile: $PROFILE_NAME"
-
-          SIGN_TOOL="$(find "$HOS_SDK_HOME" -type f \( -name 'hap-sign-tool.jar' -o -name 'hap_sign_tool.jar' \) -print | head -n 1)"
-          if [[ -z "$SIGN_TOOL" ]]; then
-            echo 'hap-sign-tool.jar was not found in the HarmonyOS SDK.' >&2
-            exit 1
-          fi
-
-          UNSIGNED_APP="$(find package/payload -maxdepth 1 -type f -name '*-unsigned.app' -print | head -n 1)"
-          if [[ -z "$UNSIGNED_APP" ]]; then
-            echo 'Unsigned APP was not found.' >&2
-            exit 1
-          fi
-          SIGNED_APP="package/payload/PaperTodo-HarmonyOS-${SOURCE_SHA:0:7}-release-signed.app"
-
-          java -jar "$SIGN_TOOL" sign-app \
-            -keyAlias "$KEY_ALIAS" \
-            -signAlg SHA256withECDSA \
-            -mode localSign \
-            -appCertFile "$CERT_FILE" \
-            -profileFile "$PROFILE_FILE" \
-            -inFile "$UNSIGNED_APP" \
-            -keystoreFile "$KEYSTORE" \
-            -outFile "$SIGNED_APP" \
-            -keyPwd "$KEYSTORE_PASSWORD" \
-            -keystorePwd "$KEYSTORE_PASSWORD" \
-            -signCode 1
-
-          java -jar "$SIGN_TOOL" verify-app \
-            -inFile "$SIGNED_APP" \
-            -outCertChain "$SIGN_DIR/verified-cert-chain.cer" \
-            -outProfile "$SIGN_DIR/verified-profile.p7b"
-
-          echo "Signed APP verified: $SIGNED_APP"
-          echo "ARTIFACT_NAME=$SIGNED_PACKAGE_BASENAME" >> "$GITHUB_ENV"
-
-      - name: Finalize package archives
-        shell: bash
-        run: |
-          set -euo pipefail
           (
             cd package/payload
-            find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' | sort -z | xargs -0 sha256sum > SHA256SUMS
+            sha256sum ./* > SHA256SUMS
             zip -9 "../${PACKAGE_BASENAME}.zip" ./*
-            if compgen -G '*-signed.app' > /dev/null; then
-              zip -9 "../${SIGNED_PACKAGE_BASENAME}.zip" ./*
-            fi
           )
-          ls -lah package package/payload
 
       - name: Upload packaged build
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ARTIFACT_NAME }}
+          name: ${{ env.PACKAGE_BASENAME }}
           if-no-files-found: error
           retention-days: 1
           path: |
-            package/*.zip
+            package/${{ env.PACKAGE_BASENAME }}.zip
             package/payload/*.app
             package/payload/*-unsigned.hap
             package/payload/SHA256SUMS
