@@ -1,7 +1,6 @@
 import { common, ConfigurationConstant, Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import {
-  AppState,
   MARKDOWN_BASIC,
   MARKDOWN_ENHANCED,
   MARKDOWN_OFF,
@@ -54,7 +53,7 @@ struct Index {
     return this.systemColorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
   }
 
-  private backgroundColor(): string {
+  private pageBackgroundColor(): string {
     return this.isDark() ? '#171715' : '#F2F2EE';
   }
 
@@ -70,15 +69,15 @@ struct Index {
     return this.isDark() ? '#AAA491' : '#746D5D';
   }
 
-  private borderColor(): string {
+  private cardBorderColor(): string {
     return this.isDark() ? '#4E4A40' : '#D8CDA5';
   }
 
-  private buttonColor(): string {
+  private primaryButtonColor(): string {
     return this.isDark() ? '#E8DFCA' : '#3D3A32';
   }
 
-  private buttonTextColor(): string {
+  private primaryButtonTextColor(): string {
     return this.isDark() ? '#26231E' : '#FFFFFF';
   }
 
@@ -156,10 +155,6 @@ struct Index {
     setTimeout((): void => this.refresh(), 80);
   }
 
-  private cancelDelete(): void {
-    this.confirmDeleteId = '';
-  }
-
   private cycleTheme(): void {
     if (this.theme === THEME_SYSTEM) {
       PaperStore.setTheme(THEME_LIGHT);
@@ -214,18 +209,16 @@ struct Index {
   }
 
   private restoreBackup(): void {
-    const openSnapshot: PaperData[] = PaperStore.listPapers();
-    for (let i: number = 0; i < openSnapshot.length; i++) {
-      if (this.isPaperOpen(openSnapshot[i].id)) {
-        this.startPaper(openSnapshot[i].id, 'close');
+    const current: PaperData[] = PaperStore.listPapers();
+    for (let i: number = 0; i < current.length; i++) {
+      if (this.isPaperOpen(current[i].id)) {
+        this.startPaper(current[i].id, 'close');
       }
     }
-
     if (!PaperStore.restoreBackup()) {
       this.statusMessage = '没有可恢复的备份';
       return;
     }
-
     this.statusMessage = '已恢复上一份自动备份';
     this.refresh();
     setTimeout((): void => {
@@ -284,18 +277,6 @@ struct Index {
     return parts.join(' · ');
   }
 
-  @Builder
-  private SettingChip(label: string, value: string, action: () => void) {
-    Button(label + '：' + value)
-      .height(36)
-      .fontSize(12)
-      .fontColor(this.textColor())
-      .backgroundColor(this.cardColor())
-      .border({ width: 1, color: this.borderColor() })
-      .borderRadius(10)
-      .onClick(action)
-  }
-
   build() {
     Column() {
       Row() {
@@ -314,15 +295,15 @@ struct Index {
         Button('☑ 新建待办')
           .height(40)
           .fontSize(13)
-          .fontColor(this.buttonTextColor())
-          .backgroundColor(this.buttonColor())
+          .fontColor(this.primaryButtonTextColor())
+          .backgroundColor(this.primaryButtonColor())
           .borderRadius(10)
           .onClick((): void => this.createPaper(PAPER_TYPE_TODO))
         Button('✎ 新建笔记')
           .height(40)
           .fontSize(13)
-          .fontColor(this.buttonTextColor())
-          .backgroundColor(this.buttonColor())
+          .fontColor(this.primaryButtonTextColor())
+          .backgroundColor(this.primaryButtonColor())
           .borderRadius(10)
           .margin({ left: 8 })
           .onClick((): void => this.createPaper(PAPER_TYPE_NOTE))
@@ -338,10 +319,34 @@ struct Index {
           .height(36)
           .fontSize(12)
           .onClick((): void => this.hideAll())
-        this.SettingChip('主题', this.themeLabel(), (): void => this.cycleTheme())
-        this.SettingChip('Markdown', this.markdownLabel(), (): void => this.cycleMarkdownMode())
-        this.SettingChip('胶囊', this.useCapsuleMode ? '开启' : '关闭', (): void => this.toggleCapsule())
-        this.SettingChip('自动贴边', this.useDeepCapsuleMode ? '开启' : '关闭', (): void => this.toggleDeepCapsule())
+        Button('主题：' + this.themeLabel())
+          .height(36)
+          .fontSize(12)
+          .fontColor(this.textColor())
+          .backgroundColor(this.cardColor())
+          .border({ width: 1, color: this.cardBorderColor() })
+          .onClick((): void => this.cycleTheme())
+        Button('Markdown：' + this.markdownLabel())
+          .height(36)
+          .fontSize(12)
+          .fontColor(this.textColor())
+          .backgroundColor(this.cardColor())
+          .border({ width: 1, color: this.cardBorderColor() })
+          .onClick((): void => this.cycleMarkdownMode())
+        Button('胶囊：' + (this.useCapsuleMode ? '开启' : '关闭'))
+          .height(36)
+          .fontSize(12)
+          .fontColor(this.textColor())
+          .backgroundColor(this.cardColor())
+          .border({ width: 1, color: this.cardBorderColor() })
+          .onClick((): void => this.toggleCapsule())
+        Button('自动贴边：' + (this.useDeepCapsuleMode ? '开启' : '关闭'))
+          .height(36)
+          .fontSize(12)
+          .fontColor(this.textColor())
+          .backgroundColor(this.cardColor())
+          .border({ width: 1, color: this.cardBorderColor() })
+          .onClick((): void => this.toggleDeepCapsule())
         Blank()
         Button('恢复备份')
           .height(36)
@@ -383,7 +388,6 @@ struct Index {
                   .width(34)
                   .fontSize(18)
                   .fontColor(this.textColor())
-
                 Column() {
                   Text(this.paperTitle(paper))
                     .maxLines(1)
@@ -397,12 +401,10 @@ struct Index {
                 }
                 .layoutWeight(1)
                 .alignItems(HorizontalAlign.Start)
-
                 Button(paper.isVisible ? '聚焦' : '显示')
                   .height(32)
                   .fontSize(11)
                   .onClick((): void => this.showPaper(paper))
-
                 if (paper.isVisible) {
                   Button('隐藏')
                     .height(32)
@@ -410,13 +412,12 @@ struct Index {
                     .margin({ left: 6 })
                     .onClick((): void => this.hidePaper(paper))
                 }
-
                 if (this.confirmDeleteId === paper.id) {
                   Button('取消')
                     .height(32)
                     .fontSize(11)
                     .margin({ left: 6 })
-                    .onClick((): void => this.cancelDelete())
+                    .onClick((): void => this.confirmDeleteId = '')
                   Button('确认删除')
                     .height(32)
                     .fontSize(11)
@@ -439,7 +440,7 @@ struct Index {
               .height(62)
               .padding({ left: 12, right: 8 })
               .backgroundColor(this.cardColor())
-              .border({ width: 1, color: this.borderColor() })
+              .border({ width: 1, color: this.cardBorderColor() })
               .borderRadius(12)
             }
           }, (paper: PaperData): string => paper.id)
@@ -459,6 +460,6 @@ struct Index {
     .width('100%')
     .height('100%')
     .padding(24)
-    .backgroundColor(this.backgroundColor())
+    .backgroundColor(this.pageBackgroundColor())
   }
 }
