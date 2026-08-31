@@ -8,12 +8,18 @@ export class CapsuleMotion {
   private currentX: number = 0;
   private currentY: number = 0;
   private initialized: boolean = false;
+  private moveInFlight: boolean = false;
+  private movePending: boolean = false;
+  private pendingWindow: window.Window | null = null;
 
   stop(): void {
     if (this.timer >= 0) {
       clearInterval(this.timer);
       this.timer = -1;
     }
+    // An already-dispatched Window move cannot be cancelled, but stale queued frames can.
+    this.movePending = false;
+    this.pendingWindow = null;
   }
 
   reset(): void {
@@ -26,9 +32,7 @@ export class CapsuleMotion {
     this.currentX = Math.round(x);
     this.currentY = Math.round(y);
     this.initialized = true;
-    if (!this.tryMove(win)) {
-      this.initialized = false;
-    }
+    this.requestMove(win);
   }
 
   animateX(win: window.Window, targetX: number, y: number, durationMs: number): void {
@@ -54,33 +58,61 @@ export class CapsuleMotion {
       const inverse: number = 1 - progress;
       const eased: number = 1 - inverse * inverse * inverse;
       this.currentX = Math.round(startX + (target - startX) * eased);
-      if (!this.tryMove(win)) {
-        this.initialized = false;
-        return;
-      }
+      this.requestMove(win);
       if (progress >= 1) {
-        this.stop();
-        this.currentX = target;
-        if (!this.tryMove(win)) {
-          this.initialized = false;
+        if (this.timer >= 0) {
+          clearInterval(this.timer);
+          this.timer = -1;
         }
+        this.currentX = target;
+        this.requestMove(win);
       }
     }, FRAME_MS);
   }
 
-  private tryMove(win: window.Window): boolean {
+  private requestMove(win: window.Window): void {
+    if (this.moveInFlight) {
+      // Coalesce every intermediate frame into the latest desired position.
+      this.movePending = true;
+      this.pendingWindow = win;
+      return;
+    }
+    this.dispatchMove(win);
+  }
+
+  private dispatchMove(win: window.Window): void {
+    const x: number = this.currentX;
+    const y: number = this.currentY;
+    this.moveInFlight = true;
     try {
-      win.moveWindowTo(this.currentX, this.currentY).catch((error: BusinessError): void => {
+      win.moveWindowTo(x, y).then((): void => {
+        this.moveInFlight = false;
+        this.dispatchPendingMove();
+      }).catch((error: BusinessError): void => {
         console.error('capsule window move failed: ' + error.message);
+        this.moveInFlight = false;
+        this.movePending = false;
+        this.pendingWindow = null;
         this.initialized = false;
         this.stop();
       });
-      return true;
     } catch (error) {
       console.error('capsule window move threw: ' + String(error));
+      this.moveInFlight = false;
+      this.movePending = false;
+      this.pendingWindow = null;
       this.initialized = false;
       this.stop();
-      return false;
     }
+  }
+
+  private dispatchPendingMove(): void {
+    if (!this.movePending || this.pendingWindow === null) {
+      return;
+    }
+    const win: window.Window = this.pendingWindow;
+    this.movePending = false;
+    this.pendingWindow = null;
+    this.dispatchMove(win);
   }
 }
