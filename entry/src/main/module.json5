@@ -59,6 +59,16 @@
         "minWindowHeight": 46,
         "exported": false
       }
+    ],
+    "extensionAbilities": [
+      {
+        "name": "PaperStatusBarAbility",
+        "icon": "$media:app_icon",
+        "description": "$string:EntryAbility_desc",
+        "type": "statusBarView",
+        "exported": true,
+        "srcEntry": "./ets/statusbarviewability/PaperStatusBarAbility.ets"
+      }
     ]
   }
 }
