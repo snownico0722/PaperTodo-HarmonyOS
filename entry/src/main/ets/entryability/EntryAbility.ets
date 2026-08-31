@@ -7,7 +7,7 @@ import {
 } from '@kit.AbilityKit';
 import { BusinessError, deviceInfo, emitter } from '@kit.BasicServicesKit';
 import { image } from '@kit.ImageKit';
-import { statusBarManager } from '@kit.DeskTopExtensionKit';
+import { statusBarManager } from '@kit.StatusBarExtensionKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { PAPER_TYPE_NOTE, PAPER_TYPE_TODO, PaperData } from '../common/Models';
@@ -24,7 +24,7 @@ const DOMAIN: number = 0x0000;
 const TAG: string = 'PaperTodo';
 
 export default class EntryAbility extends UIAbility {
-  private mainWindow: window.Window | null = null;
+  private hostWindow: window.Window | null = null;
   private statusBarReady: boolean = false;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
@@ -35,26 +35,33 @@ export default class EntryAbility extends UIAbility {
   }
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    // Explicitly launching PaperTodo from the launcher opens the full manager.
-    this.showManagerWindow();
+    // 桌面图标只负责唤醒 PaperTodo，不再把管理中心当成主界面。
+    this.showAllPapers();
+    this.ensureStatusBar().catch((error: Error): void => {
+      hilog.warn(DOMAIN, TAG, 'refresh status bar failed: %{public}s', error.message);
+    });
+    this.minimizeHostWindow().catch((error: Error): void => {
+      hilog.warn(DOMAIN, TAG, 'minimize host after relaunch failed: %{public}s', error.message);
+    });
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
-    hilog.info(DOMAIN, TAG, '%{public}s', 'Window stage created');
+    hilog.info(DOMAIN, TAG, '%{public}s', 'background host stage created');
     try {
-      this.mainWindow = windowStage.getMainWindowSync();
+      this.hostWindow = windowStage.getMainWindowSync();
     } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'get manager window failed: %{public}s', String(error));
+      hilog.warn(DOMAIN, TAG, 'get host window failed: %{public}s', String(error));
     }
 
-    windowStage.loadContent('pages/Index', (err: BusinessError): void => {
+    windowStage.loadContent('pages/Host', (err: BusinessError): void => {
       if (err.code !== 0) {
-        hilog.error(DOMAIN, TAG, 'Failed to load content. Cause: %{public}s', JSON.stringify(err));
+        hilog.error(DOMAIN, TAG, 'Failed to load host page. Cause: %{public}s', JSON.stringify(err));
         return;
       }
-      this.bootstrapDesktop().catch((error: Error): void => {
-        hilog.warn(DOMAIN, TAG, 'desktop bootstrap failed: %{public}s', error.message);
-      });
+      this.configureHostWindow().then((): void => this.bootstrapDesktop())
+        .catch((error: Error): void => {
+          hilog.warn(DOMAIN, TAG, 'desktop bootstrap failed: %{public}s', error.message);
+        });
     });
   }
 
@@ -64,7 +71,7 @@ export default class EntryAbility extends UIAbility {
 
   onDestroy(): void {
     PaperStore.flushNow();
-    this.mainWindow = null;
+    this.hostWindow = null;
   }
 
   onConfigurationUpdate(config: Configuration): void {
@@ -73,15 +80,35 @@ export default class EntryAbility extends UIAbility {
     }
   }
 
+  private async configureHostWindow(): Promise<void> {
+    const win: window.Window | null = this.hostWindow;
+    if (win === null) {
+      return;
+    }
+    try {
+      win.setWindowDecorVisible(false);
+      win.setWindowTitleButtonVisible(false, false, false);
+      win.setWindowDecorHeight(0);
+      win.setWindowBackgroundColor('#00000000');
+      win.setWindowContainerColor('#00000000', '#00000000');
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'configure transparent host failed: %{public}s', String(error));
+    }
+    try {
+      await win.setWindowShadowEnabled(false);
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'disable host shadow failed: %{public}s', String(error));
+    }
+  }
+
   private async bootstrapDesktop(): Promise<void> {
     this.statusBarReady = await this.ensureStatusBar();
     await this.restoreVisiblePapers();
+    await this.minimizeHostWindow();
 
-    // The manager is fallback UI, not PaperTodo's normal resident surface.
-    // Once the system status-bar entry exists, keep the large manager minimized
-    // even when there are currently zero visible papers.
-    if (deviceInfo.deviceType === '2in1' && this.statusBarReady) {
-      await this.minimizeManagerWindow();
+    // 仅当系统状态栏注册失败时，才退回传统管理窗口，避免应用完全不可操作。
+    if (deviceInfo.deviceType === '2in1' && !this.statusBarReady) {
+      this.openManager();
     }
   }
 
@@ -115,7 +142,7 @@ export default class EntryAbility extends UIAbility {
       hilog.info(DOMAIN, TAG, '%{public}s', 'PaperTodo added to system status bar');
       return true;
     } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'addToStatusBar failed, keep manager fallback: %{public}s', String(error));
+      hilog.warn(DOMAIN, TAG, 'addToStatusBar failed: %{public}s', String(error));
       return false;
     }
   }
@@ -131,7 +158,7 @@ export default class EntryAbility extends UIAbility {
     emitter.on(newNote, (): void => this.createPaper(PAPER_TYPE_NOTE));
     emitter.on(showAll, (): void => this.showAllPapers());
     emitter.on(hideAll, (): void => this.hideAllPapers());
-    emitter.on(openManager, (): void => this.showManagerWindow());
+    emitter.on(openManager, (): void => this.openManager());
   }
 
   private createPaper(type: string): void {
@@ -204,27 +231,25 @@ export default class EntryAbility extends UIAbility {
     }
   }
 
-  private async minimizeManagerWindow(): Promise<void> {
-    if (this.mainWindow === null) {
-      return;
-    }
-    try {
-      await this.mainWindow.minimize();
-    } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'minimize manager failed: %{public}s', String(error));
-    }
+  private openManager(): void {
+    const want: Want = {
+      bundleName: 'com.papertodo.app',
+      moduleName: 'entry',
+      abilityName: 'ManagerAbility'
+    };
+    this.context.startAbility(want).catch((error: BusinessError): void => {
+      hilog.warn(DOMAIN, TAG, 'open manager failed: %{public}s', error.message);
+    });
   }
 
-  private showManagerWindow(): void {
-    if (this.mainWindow === null) {
+  private async minimizeHostWindow(): Promise<void> {
+    if (this.hostWindow === null) {
       return;
     }
     try {
-      this.mainWindow.showWindow().catch((error: BusinessError): void => {
-        hilog.warn(DOMAIN, TAG, 'show manager window failed: %{public}s', error.message);
-      });
+      await this.hostWindow.minimize();
     } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'show manager window threw: %{public}s', String(error));
+      hilog.warn(DOMAIN, TAG, 'minimize host failed: %{public}s', String(error));
     }
   }
 }
