@@ -1,6 +1,8 @@
 import { CAPSULE_HEIGHT, CAPSULE_WIDTH } from './Models';
+import { normalizeDensity, vpToPx } from './WindowGeometry';
 
 export interface CapsuleMetrics {
+  density: number;
   widthPx: number;
   heightPx: number;
   gapPx: number;
@@ -16,14 +18,15 @@ export function createCapsuleMetrics(
   densityPixels: number,
   gapVp: number
 ): CapsuleMetrics {
-  const density: number = Number.isFinite(densityPixels) && densityPixels > 0 ? densityPixels : 1;
-  const widthPx: number = Math.max(1, Math.round(CAPSULE_WIDTH * density));
-  const heightPx: number = Math.max(1, Math.round(CAPSULE_HEIGHT * density));
+  const density: number = normalizeDensity(densityPixels);
+  const widthPx: number = Math.max(1, vpToPx(CAPSULE_WIDTH, density));
+  const heightPx: number = Math.max(1, vpToPx(CAPSULE_HEIGHT, density));
   return {
+    density: density,
     widthPx: widthPx,
     heightPx: heightPx,
-    gapPx: Math.max(0, Math.round(gapVp * density)),
-    topPx: Math.max(0, Math.round(20 * density)),
+    gapPx: Math.max(0, vpToPx(gapVp, density)),
+    topPx: Math.max(0, vpToPx(20, density)),
     hiddenOffsetPx: Math.round(widthPx * 0.45),
     screenWidthPx: screenWidthPx,
     screenHeightPx: screenHeightPx
