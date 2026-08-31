@@ -2,8 +2,14 @@ import { common, ConfigurationConstant, Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { display, window } from '@kit.ArkUI';
 import {
-  CAPSULE_HEIGHT,
-  CAPSULE_WIDTH,
+  CapsuleMetrics,
+  createCapsuleMetrics,
+  edgeCapsuleFullX,
+  edgeCapsuleHiddenX,
+  edgeCapsuleY
+} from '../common/CapsuleGeometry';
+import { CapsuleMotion } from '../common/CapsuleMotion';
+import {
   MARKDOWN_BASIC,
   MARKDOWN_ENHANCED,
   MARKDOWN_OFF,
@@ -36,6 +42,10 @@ import {
   parseMarkdownLines
 } from '../common/MarkdownLite';
 import { PaperStore } from '../common/PaperStore';
+
+const CAPSULE_REVEAL_MS: number = 110;
+const CAPSULE_HIDE_MS: number = 130;
+const CAPSULE_DRAG_THRESHOLD: number = 4;
 
 @Entry({ useSharedStorage: true })
 @Component
@@ -73,12 +83,17 @@ struct Paper {
   private resizeBaseHeight: number = 0;
   private resizeCurrentWidth: number = 0;
   private resizeCurrentHeight: number = 0;
+  private capsuleMotion: CapsuleMotion = new CapsuleMotion();
+  private capsuleHovered: boolean = false;
+  private capsuleDragging: boolean = false;
+  private capsuleMovedDuringDrag: boolean = false;
 
   aboutToAppear(): void {
     this.reloadPaper();
   }
 
   aboutToDisappear(): void {
+    this.capsuleMotion.stop();
     PaperStore.flushNow();
   }
 
@@ -113,8 +128,8 @@ struct Paper {
       this.restoreExpandedWindow();
       return;
     }
-    if (this.isCollapsed) {
-      this.syncCollapsedWindow(false);
+    if (this.isCollapsed && !this.capsuleDragging) {
+      this.syncCollapsedWindow(this.capsuleHovered);
     }
   }
 
@@ -252,6 +267,7 @@ struct Paper {
     if (this.paper === null) {
       return;
     }
+    this.capsuleMotion.stop();
     this.paper.isVisible = false;
     this.savePaper(true);
     PaperStore.flushNow();
@@ -263,6 +279,7 @@ struct Paper {
       this.deleteConfirm = true;
       return;
     }
+    this.capsuleMotion.stop();
     PaperStore.deletePaper(this.paperId);
     PaperStore.flushNow();
     this.hostContext().terminateSelf();
@@ -318,6 +335,11 @@ struct Paper {
     return 'MD+';
   }
 
+  private capsuleMetrics(): CapsuleMetrics {
+    const screen: display.Display = display.getDefaultDisplaySync();
+    return createCapsuleMetrics(screen.width, screen.height, screen.densityPixels, this.capsuleGap);
+  }
+
   private setCollapsed(collapsed: boolean): void {
     if (collapsed && !this.useCapsuleMode) {
       return;
@@ -325,6 +347,10 @@ struct Paper {
     if (this.paper === null) {
       return;
     }
+    this.capsuleHovered = false;
+    this.capsuleDragging = false;
+    this.capsuleMovedDuringDrag = false;
+    this.capsuleMotion.stop();
     this.isCollapsed = collapsed;
     this.paper.isCollapsed = collapsed;
     this.savePaper(true);
@@ -343,6 +369,7 @@ struct Paper {
     if (win === undefined) {
       return;
     }
+    this.capsuleMotion.stop();
     this.layoutWidth = this.paper.expandedWidth;
     win.resize(Math.round(this.paper.expandedWidth), Math.round(this.paper.expandedHeight));
     win.moveWindowTo(Math.round(this.paper.expandedX), Math.round(this.paper.expandedY));
@@ -356,30 +383,16 @@ struct Paper {
     if (win === undefined) {
       return;
     }
-    win.resize(CAPSULE_WIDTH, CAPSULE_HEIGHT);
+    const metrics: CapsuleMetrics = this.capsuleMetrics();
+    win.resize(metrics.widthPx, metrics.heightPx);
     if (this.useDeepCapsuleMode) {
-      this.snapCapsule(hovered);
+      this.animateEdgeCapsule(hovered, metrics);
     } else {
-      this.moveFloatingCapsule();
+      this.moveFloatingCapsule(metrics);
     }
   }
 
-  private moveFloatingCapsule(): void {
-    if (this.paper === null) {
-      return;
-    }
-    const win: window.Window | undefined = this.currentWindow();
-    if (win === undefined) {
-      return;
-    }
-    const screen: display.Display = display.getDefaultDisplaySync();
-    this.paper.capsuleX = this.clamp(this.paper.capsuleX, 0, Math.max(0, screen.width - CAPSULE_WIDTH));
-    this.paper.capsuleY = this.clamp(this.paper.capsuleY, 0, Math.max(0, screen.height - CAPSULE_HEIGHT));
-    PaperStore.updatePaper(this.paper, false);
-    win.moveWindowTo(Math.round(this.paper.capsuleX), Math.round(this.paper.capsuleY));
-  }
-
-  private snapCapsule(hovered: boolean): void {
+  private animateEdgeCapsule(hovered: boolean, metrics: CapsuleMetrics = this.capsuleMetrics()): void {
     if (!this.isCollapsed || !this.useDeepCapsuleMode || this.paper === null) {
       return;
     }
@@ -387,17 +400,44 @@ struct Paper {
     if (win === undefined) {
       return;
     }
-    const screen: display.Display = display.getDefaultDisplaySync();
-    const fullX: number = Math.max(0, screen.width - CAPSULE_WIDTH);
-    const hidden: number = hovered ? 0 : Math.round(CAPSULE_WIDTH * 0.45);
     const index: number = PaperStore.getCollapsedIndex(this.paperId);
-    const targetY: number = 20 + index * (CAPSULE_HEIGHT + this.capsuleGap);
-    if (this.paper.capsuleX !== fullX || this.paper.capsuleY !== targetY) {
-      this.paper.capsuleX = fullX;
-      this.paper.capsuleY = targetY;
-      PaperStore.updatePaper(this.paper, false);
+    const targetY: number = edgeCapsuleY(index, metrics);
+    const targetX: number = hovered ? edgeCapsuleFullX(metrics) : edgeCapsuleHiddenX(metrics);
+    const duration: number = hovered ? CAPSULE_REVEAL_MS : CAPSULE_HIDE_MS;
+    this.capsuleMotion.animateX(win, targetX, targetY, duration);
+  }
+
+  private onCapsuleHover(isHover: boolean): void {
+    this.capsuleHovered = isHover;
+    if (!this.isCollapsed || !this.useDeepCapsuleMode || this.capsuleDragging) {
+      return;
     }
-    win.moveWindowTo(fullX + hidden, targetY);
+    this.animateEdgeCapsule(isHover);
+  }
+
+  private activateCapsule(): void {
+    if (this.capsuleMovedDuringDrag) {
+      this.capsuleMovedDuringDrag = false;
+      return;
+    }
+    this.setCollapsed(false);
+  }
+
+  private moveFloatingCapsule(metrics: CapsuleMetrics = this.capsuleMetrics()): void {
+    if (this.paper === null) {
+      return;
+    }
+    const win: window.Window | undefined = this.currentWindow();
+    if (win === undefined) {
+      return;
+    }
+    this.capsuleMotion.stop();
+    this.paper.capsuleX = this.clamp(this.paper.capsuleX, 0,
+      Math.max(0, metrics.screenWidthPx - metrics.widthPx));
+    this.paper.capsuleY = this.clamp(this.paper.capsuleY, 0,
+      Math.max(0, metrics.screenHeightPx - metrics.heightPx));
+    PaperStore.updatePaper(this.paper, false);
+    this.capsuleMotion.setPosition(win, this.paper.capsuleX, this.paper.capsuleY);
   }
 
   private beginMove(): void {
@@ -405,14 +445,24 @@ struct Paper {
       return;
     }
     if (this.isCollapsed) {
+      this.capsuleMovedDuringDrag = false;
       if (this.useDeepCapsuleMode) {
-        const screen: display.Display = display.getDefaultDisplaySync();
-        this.moveBaseX = Math.max(0, screen.width - CAPSULE_WIDTH);
-        this.moveBaseY = this.paper.capsuleY;
-      } else {
-        this.moveBaseX = this.paper.capsuleX;
-        this.moveBaseY = this.paper.capsuleY;
+        const win: window.Window | undefined = this.currentWindow();
+        const metrics: CapsuleMetrics = this.capsuleMetrics();
+        const index: number = PaperStore.getCollapsedIndex(this.paperId);
+        this.capsuleDragging = true;
+        this.capsuleMotion.stop();
+        this.moveBaseX = edgeCapsuleFullX(metrics);
+        this.moveBaseY = edgeCapsuleY(index, metrics);
+        this.moveCurrentX = this.moveBaseX;
+        this.moveCurrentY = this.moveBaseY;
+        if (win !== undefined) {
+          this.capsuleMotion.setPosition(win, this.moveBaseX, this.moveBaseY);
+        }
+        return;
       }
+      this.moveBaseX = this.paper.capsuleX;
+      this.moveBaseY = this.paper.capsuleY;
     } else {
       this.moveBaseX = this.paper.expandedX;
       this.moveBaseY = this.paper.expandedY;
@@ -426,6 +476,24 @@ struct Paper {
     if (win === undefined) {
       return;
     }
+
+    if (this.isCollapsed &&
+      (Math.abs(event.offsetX) >= CAPSULE_DRAG_THRESHOLD || Math.abs(event.offsetY) >= CAPSULE_DRAG_THRESHOLD)) {
+      this.capsuleMovedDuringDrag = true;
+    }
+
+    if (this.isCollapsed && this.useDeepCapsuleMode) {
+      const metrics: CapsuleMetrics = this.capsuleMetrics();
+      this.moveCurrentX = edgeCapsuleFullX(metrics);
+      this.moveCurrentY = this.clamp(
+        Math.round(this.moveBaseY + event.offsetY),
+        0,
+        Math.max(0, metrics.screenHeightPx - metrics.heightPx)
+      );
+      this.capsuleMotion.setPosition(win, this.moveCurrentX, this.moveCurrentY);
+      return;
+    }
+
     this.moveCurrentX = Math.round(this.moveBaseX + event.offsetX);
     this.moveCurrentY = Math.round(this.moveBaseY + event.offsetY);
     win.moveWindowTo(this.moveCurrentX, this.moveCurrentY);
@@ -437,18 +505,20 @@ struct Paper {
     }
     if (this.isCollapsed) {
       if (this.useDeepCapsuleMode) {
+        const metrics: CapsuleMetrics = this.capsuleMetrics();
         const desiredIndex: number = Math.max(0,
-          Math.round((this.moveCurrentY - 20) / (CAPSULE_HEIGHT + this.capsuleGap)));
+          Math.round((this.moveCurrentY - metrics.topPx) / (metrics.heightPx + metrics.gapPx)));
         PaperStore.moveCollapsedPaper(this.paperId, desiredIndex);
         const latest: PaperData | null = PaperStore.getPaper(this.paperId);
         if (latest !== null) {
           this.paper = latest;
         }
-        this.snapCapsule(false);
+        this.capsuleDragging = false;
+        this.syncCollapsedWindow(this.capsuleHovered);
       } else {
         this.paper.capsuleX = this.moveCurrentX;
         this.paper.capsuleY = this.moveCurrentY;
-        PaperStore.updatePaper(this.paper, false);
+        this.moveFloatingCapsule();
       }
       return;
     }
@@ -1088,8 +1158,8 @@ struct Paper {
     .backgroundColor(this.paperColor())
     .border({ width: 1, color: this.paperBorderColor() })
     .borderRadius(22)
-    .onHover((isHover: boolean): void => this.snapCapsule(isHover))
-    .onClick((): void => this.setCollapsed(false))
+    .onHover((isHover: boolean): void => this.onCapsuleHover(isHover))
+    .onClick((): void => this.activateCapsule())
     .gesture(
       PanGesture({ direction: PanDirection.All })
         .onActionStart((): void => this.beginMove())
