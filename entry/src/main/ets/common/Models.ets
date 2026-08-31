@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION: number = 3;
+export const SCHEMA_VERSION: number = 4;
 
 export const PAPER_TYPE_TODO: string = 'todo';
 export const PAPER_TYPE_NOTE: string = 'note';
@@ -34,6 +34,7 @@ export const MAX_PAPERS: number = 100;
 export const TITLE_MAX_LENGTH: number = 20;
 export const TODO_PASTE_MAX_ITEMS: number = 200;
 export const TODO_ITEM_MAX_LENGTH: number = 2000;
+export const TODO_HISTORY_LIMIT: number = 100;
 export const NOTE_MAX_LENGTH: number = 200000;
 
 export interface PaperItem {
@@ -41,6 +42,9 @@ export interface PaperItem {
   text: string;
   done: boolean;
   order: number;
+
+  // v2.x: a todo item may point at one note paper. Undefined means unlinked.
+  linkedNoteId?: string;
 }
 
 export interface PaperData {
@@ -86,5 +90,8 @@ export interface AppState {
   useDeepCapsuleMode: boolean;
   todoVisualSize: string;
   autoBottomCompleted: boolean;
+  autoClearCompletedTodos: boolean;
+  enableTodoNoteLinks: boolean;
+  showLinkedNoteName: boolean;
   capsuleGap: number;
 }
