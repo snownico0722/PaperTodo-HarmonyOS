@@ -15,12 +15,17 @@ export class CapsuleMotion {
     }
   }
 
+  reset(): void {
+    this.stop();
+    this.initialized = false;
+  }
+
   setPosition(win: window.Window, x: number, y: number): void {
     this.stop();
     this.currentX = Math.round(x);
     this.currentY = Math.round(y);
     this.initialized = true;
-    win.moveWindowTo(this.currentX, this.currentY);
+    this.tryMove(win);
   }
 
   animateX(win: window.Window, targetX: number, y: number, durationMs: number): void {
@@ -46,20 +51,25 @@ export class CapsuleMotion {
       const inverse: number = 1 - progress;
       const eased: number = 1 - inverse * inverse * inverse;
       this.currentX = Math.round(startX + (target - startX) * eased);
-      win.moveWindowTo(this.currentX, this.currentY);
+      if (!this.tryMove(win)) {
+        return;
+      }
       if (progress >= 1) {
         this.stop();
         this.currentX = target;
-        win.moveWindowTo(this.currentX, this.currentY);
+        this.tryMove(win);
       }
     }, FRAME_MS);
   }
 
-  getCurrentX(fallback: number): number {
-    return this.initialized ? this.currentX : fallback;
-  }
-
-  getCurrentY(fallback: number): number {
-    return this.initialized ? this.currentY : fallback;
+  private tryMove(win: window.Window): boolean {
+    try {
+      win.moveWindowTo(this.currentX, this.currentY);
+      return true;
+    } catch (error) {
+      console.error('capsule window move failed: ' + String(error));
+      this.stop();
+      return false;
+    }
   }
 }
