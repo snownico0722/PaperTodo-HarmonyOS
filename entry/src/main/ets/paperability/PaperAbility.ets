@@ -31,6 +31,24 @@ export default class PaperAbility extends UIAbility {
     if (nextId.length > 0) {
       this.paperId = nextId;
     }
+
+    const command: string = this.readCommand(want);
+    if (command === 'hide') {
+      PaperStore.setPaperVisible(this.paperId, false);
+      this.context.terminateSelf();
+      return;
+    }
+    if (command === 'delete') {
+      PaperStore.deletePaper(this.paperId);
+      this.context.terminateSelf();
+      return;
+    }
+    if (command === 'close') {
+      this.context.terminateSelf();
+      return;
+    }
+
+    PaperStore.setPaperVisible(this.paperId, true);
     this.context.showAbility().catch((error: BusinessError): void => {
       hilog.warn(DOMAIN, TAG, 'showAbility failed: %{public}s', error.message);
     });
@@ -91,6 +109,17 @@ export default class PaperAbility extends UIAbility {
     const raw: Object | undefined = want.parameters.paperId;
     if (raw === undefined || raw === null) {
       return '';
+    }
+    return String(raw);
+  }
+
+  private readCommand(want: Want): string {
+    if (!want.parameters) {
+      return 'show';
+    }
+    const raw: Object | undefined = want.parameters.paperCommand;
+    if (raw === undefined || raw === null) {
+      return 'show';
     }
     return String(raw);
   }
