@@ -95,6 +95,7 @@ struct PaperDesktop {
   @State todoDragging: boolean = false;
   @State todoDragDeleteArmed: boolean = false;
   @State todoHistoryRevision: number = 0;
+  @State editingTitle: boolean = false;
 
   private paper: PaperData | null = null;
   private moveBaseX: number = 0;
@@ -154,6 +155,9 @@ struct PaperDesktop {
     this.paper = latest;
     this.alwaysOnTop = latest.alwaysOnTop;
     this.isCollapsed = latest.isCollapsed && this.useCapsuleMode;
+    if (!this.editingTitle) {
+      this.title = latest.title;
+    }
     if (wasCollapsed && !this.isCollapsed) {
       this.restoreExpandedWindow();
       return;
@@ -242,14 +246,6 @@ struct PaperDesktop {
     return this.isDark() ? '#39362F' : '#FFFDF4';
   }
 
-  private typeLabel(): string {
-    return this.paper !== null && this.paper.type === PAPER_TYPE_NOTE ? '✎' : '☑';
-  }
-
-  private pinLabel(): string {
-    return this.alwaysOnTop ? '●' : '○';
-  }
-
   private titleOrFallback(): string {
     if (this.title.trim().length > 0) {
       return this.title.trim();
@@ -259,6 +255,36 @@ struct PaperDesktop {
     }
     const unfinished: number = this.unfinishedCount();
     return unfinished > 0 ? '待办 ' + unfinished.toString() : '待办';
+  }
+
+  private headerTitle(): string {
+    if (this.title.trim().length > 0) {
+      return this.title.trim();
+    }
+    return this.paper !== null && this.paper.type === PAPER_TYPE_NOTE ? '笔记' : '待办';
+  }
+
+  private typeLabel(): string {
+    return this.paper !== null && this.paper.type === PAPER_TYPE_NOTE ? '✎' : '☑';
+  }
+
+  private beginTitleEdit(): void {
+    if (this.editingTitle) {
+      return;
+    }
+    this.editingTitle = true;
+    setTimeout((): void => {
+      this.getUIContext().getFocusController().requestFocus('paper-title-input');
+    }, 0);
+  }
+
+  private endTitleEdit(): void {
+    if (!this.editingTitle) {
+      return;
+    }
+    this.editingTitle = false;
+    this.title = this.title.slice(0, TITLE_MAX_LENGTH);
+    this.savePaper(false);
   }
 
   private unfinishedCount(): number {
@@ -1009,6 +1035,14 @@ struct PaperDesktop {
     return note !== null && note.type === PAPER_TYPE_NOTE ? note : null;
   }
 
+  private linkedNoteIsOpen(item: PaperItem): boolean {
+    const note: PaperData | null = this.linkedNote(item);
+    if (note === null || !note.isVisible) {
+      return false;
+    }
+    return AppStorage.get<boolean>('paperOpen:' + note.id) === true;
+  }
+
   private linkButtonLabel(item: PaperItem): string {
     const note: PaperData | null = this.linkedNote(item);
     if (note === null) {
@@ -1094,13 +1128,29 @@ struct PaperDesktop {
     if (prefix.length === 0) {
       return { text: next, caret: -1 };
     }
-    const body: string = line.substring(prefix.length).trim();
+    const body: string = this.markdownListBody(line);
     if (body.length === 0) {
       const exited: string = next.substring(0, lineStart) + next.substring(diff);
       return { text: exited, caret: lineStart + 1 };
     }
     const continued: string = next.substring(0, diff + 1) + prefix + next.substring(diff + 1);
     return { text: continued.slice(0, NOTE_MAX_LENGTH), caret: diff + 1 + prefix.length };
+  }
+
+  private markdownListBody(line: string): string {
+    let match: RegExpMatchArray | null = line.match(/^(\s*)[-*+]\s+\[[ xX]\]\s+/);
+    if (match !== null) {
+      return line.substring(match[0].length).trim();
+    }
+    match = line.match(/^(\s*)[-*+]\s+/);
+    if (match !== null) {
+      return line.substring(match[0].length).trim();
+    }
+    match = line.match(/^(\s*)\d+[.、]\s+/);
+    if (match !== null) {
+      return line.substring(match[0].length).trim();
+    }
+    return line.trim();
   }
 
   private markdownContinuationPrefix(line: string): string {
@@ -1163,13 +1213,16 @@ struct PaperDesktop {
             .onActionEnd((): void => this.endMove())
         )
 
-      Button(this.pinLabel())
-        .width(28)
-        .height(30)
-        .fontSize(12)
-        .fontColor(this.alwaysOnTop ? this.textColor() : this.mutedColor())
-        .backgroundColor(Color.Transparent)
-        .onClick((): void => this.toggleTopmost())
+      Button() {
+        Image(this.alwaysOnTop ? $r('app.media.pin_filled') : $r('app.media.pin_outline'))
+          .width(17)
+          .height(17)
+          .opacity(this.alwaysOnTop ? 1 : 0.72)
+      }
+      .width(28)
+      .height(30)
+      .backgroundColor(Color.Transparent)
+      .onClick((): void => this.toggleTopmost())
 
       if (this.useCapsuleMode) {
         Button('▁')
@@ -1181,21 +1234,35 @@ struct PaperDesktop {
           .onClick((): void => this.setCollapsed(true))
       }
 
-      TextInput({
-        text: this.title,
-        placeholder: this.paper !== null && this.paper.type === PAPER_TYPE_NOTE ? '笔记' : '待办'
-      })
-        .layoutWeight(1)
-        .height(30)
-        .fontSize(13)
-        .fontColor(this.textColor())
-        .placeholderColor(this.mutedColor())
-        .backgroundColor(Color.Transparent)
-        .padding(0)
-        .onChange((value: string): void => {
-          this.title = value.slice(0, TITLE_MAX_LENGTH);
-          this.savePaper(false);
+      if (this.editingTitle) {
+        TextInput({
+          text: this.title,
+          placeholder: this.paper !== null && this.paper.type === PAPER_TYPE_NOTE ? '笔记' : '待办'
         })
+          .id('paper-title-input')
+          .layoutWeight(1)
+          .height(30)
+          .fontSize(13)
+          .fontColor(this.textColor())
+          .placeholderColor(this.mutedColor())
+          .backgroundColor(Color.Transparent)
+          .padding(0)
+          .onChange((value: string): void => {
+            this.title = value.slice(0, TITLE_MAX_LENGTH);
+          })
+          .onSubmit((): void => this.endTitleEdit())
+          .onBlur((): void => this.endTitleEdit())
+      } else {
+        Text(this.headerTitle())
+          .layoutWeight(1)
+          .height(30)
+          .fontSize(13)
+          .fontColor(this.textColor())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .textAlign(TextAlign.Start)
+          .onClick((): void => this.beginTitleEdit())
+      }
 
       if (this.paper !== null && this.paper.type === PAPER_TYPE_NOTE) {
         Button(this.isNoteBrowsing ? '编' : '览')
@@ -1433,7 +1500,9 @@ struct PaperDesktop {
                   .constraintSize({ minWidth: 28, maxWidth: this.showLinkedNoteName ? 88 : 28 })
                   .height(28)
                   .fontSize(9)
-                  .fontColor(this.linkedNote(item) !== null ? this.textColor() : this.mutedColor())
+                  .fontColor(this.linkedNoteIsOpen(item) ? '#B7791F' :
+                    (this.linkedNote(item) !== null ? this.textColor() : this.mutedColor()))
+                  .opacity(this.linkedNoteIsOpen(item) ? 1 : (this.linkedNote(item) !== null ? 0.72 : 0.5))
                   .backgroundColor(Color.Transparent)
                   .onClick((): void => this.activateLinkedNote(item))
                 if (item.linkedNoteId !== undefined) {
