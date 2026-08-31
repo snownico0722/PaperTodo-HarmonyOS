@@ -7,6 +7,7 @@ import {
   MARKDOWN_BASIC,
   MARKDOWN_ENHANCED,
   MARKDOWN_OFF,
+  NOTE_MAX_LENGTH,
   PAPER_MIN_HEIGHT,
   PAPER_MIN_WIDTH,
   PAPER_TYPE_NOTE,
@@ -15,7 +16,14 @@ import {
   PaperItem,
   THEME_DARK,
   THEME_LIGHT,
-  THEME_SYSTEM
+  THEME_SYSTEM,
+  TITLE_MAX_LENGTH,
+  TODO_ITEM_MAX_LENGTH,
+  TODO_PASTE_MAX_ITEMS,
+  TODO_VISUAL_LARGE,
+  TODO_VISUAL_MEDIUM,
+  TODO_VISUAL_SMALL,
+  TODO_VISUAL_XLARGE
 } from '../common/Models';
 import {
   MarkdownLine,
@@ -29,14 +37,18 @@ import {
 } from '../common/MarkdownLite';
 import { PaperStore } from '../common/PaperStore';
 
-@Entry
+@Entry({ useSharedStorage: true })
 @Component
 struct Paper {
   @LocalStorageProp('paperId') paperId: string = '';
   @StorageLink('theme') theme: string = THEME_SYSTEM;
   @StorageLink('markdownRenderMode') @Watch('onMarkdownModeChanged') markdownRenderMode: string = MARKDOWN_ENHANCED;
   @StorageLink('useCapsuleMode') useCapsuleMode: boolean = true;
-  @StorageLink('useDeepCapsuleMode') @Watch('onDeepCapsuleChanged') useDeepCapsuleMode: boolean = true;
+  @StorageLink('useDeepCapsuleMode') useDeepCapsuleMode: boolean = true;
+  @StorageLink('todoVisualSize') todoVisualSize: string = TODO_VISUAL_MEDIUM;
+  @StorageLink('autoBottomCompleted') autoBottomCompleted: boolean = false;
+  @StorageLink('capsuleGap') capsuleGap: number = 4;
+  @StorageLink('paperRevision') @Watch('onPaperRevision') paperRevision: number = 0;
   @StorageLink('systemColorMode') systemColorMode: number = ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT;
 
   @State title: string = '';
@@ -48,6 +60,9 @@ struct Paper {
   @State isCollapsed: boolean = false;
   @State markdownLines: MarkdownLine[] = [];
   @State deleteConfirm: boolean = false;
+  @State layoutWidth: number = 320;
+  @State showMoreActions: boolean = false;
+  @State statusMessage: string = '';
 
   private paper: PaperData | null = null;
   private moveBaseX: number = 0;
@@ -63,6 +78,10 @@ struct Paper {
     this.reloadPaper();
   }
 
+  aboutToDisappear(): void {
+    PaperStore.flushNow();
+  }
+
   private reloadPaper(): void {
     const loaded: PaperData | null = PaperStore.getPaper(this.paperId);
     if (loaded === null) {
@@ -74,22 +93,45 @@ struct Paper {
     this.content = loaded.content;
     this.alwaysOnTop = loaded.alwaysOnTop;
     this.isCollapsed = loaded.isCollapsed && this.useCapsuleMode;
+    this.layoutWidth = loaded.expandedWidth;
     this.refreshMarkdown();
-    if (this.isCollapsed && this.useDeepCapsuleMode) {
-      setTimeout((): void => this.snapCapsule(false), 120);
+    if (this.isCollapsed) {
+      setTimeout((): void => this.syncCollapsedWindow(false), 100);
     }
   }
 
-  private savePaper(): void {
+  private onPaperRevision(): void {
+    const latest: PaperData | null = PaperStore.getPaper(this.paperId);
+    if (latest === null) {
+      return;
+    }
+    const wasCollapsed: boolean = this.isCollapsed;
+    this.paper = latest;
+    this.alwaysOnTop = latest.alwaysOnTop;
+    this.isCollapsed = latest.isCollapsed && this.useCapsuleMode;
+    if (wasCollapsed && !this.isCollapsed) {
+      this.restoreExpandedWindow();
+      return;
+    }
+    if (this.isCollapsed) {
+      this.syncCollapsedWindow(false);
+    }
+  }
+
+  private onMarkdownModeChanged(): void {
+    this.refreshMarkdown();
+  }
+
+  private savePaper(immediate: boolean = false): void {
     if (this.paper === null) {
       return;
     }
-    this.paper.title = this.title;
+    this.paper.title = this.title.slice(0, TITLE_MAX_LENGTH);
     this.paper.items = this.items;
-    this.paper.content = this.content;
+    this.paper.content = this.content.slice(0, NOTE_MAX_LENGTH);
     this.paper.alwaysOnTop = this.alwaysOnTop;
     this.paper.isCollapsed = this.isCollapsed;
-    PaperStore.updatePaper(this.paper);
+    PaperStore.updatePaper(this.paper, immediate);
   }
 
   private currentWindow(): window.Window | undefined {
@@ -131,10 +173,11 @@ struct Paper {
   }
 
   private typeLabel(): string {
-    if (this.paper !== null && this.paper.type === PAPER_TYPE_NOTE) {
-      return '✎';
-    }
-    return '☑';
+    return this.paper !== null && this.paper.type === PAPER_TYPE_NOTE ? '✎' : '☑';
+  }
+
+  private pinLabel(): string {
+    return this.alwaysOnTop ? '📌' : '⌖';
   }
 
   private titleOrFallback(): string {
@@ -168,9 +211,35 @@ struct Paper {
     return count;
   }
 
+  private todoFontSize(): number {
+    if (this.todoVisualSize === TODO_VISUAL_SMALL) {
+      return 12;
+    }
+    if (this.todoVisualSize === TODO_VISUAL_LARGE) {
+      return 16;
+    }
+    if (this.todoVisualSize === TODO_VISUAL_XLARGE) {
+      return 18;
+    }
+    return 14;
+  }
+
+  private todoRowHeight(): number {
+    if (this.todoVisualSize === TODO_VISUAL_SMALL) {
+      return 34;
+    }
+    if (this.todoVisualSize === TODO_VISUAL_LARGE) {
+      return 46;
+    }
+    if (this.todoVisualSize === TODO_VISUAL_XLARGE) {
+      return 52;
+    }
+    return 40;
+  }
+
   private toggleTopmost(): void {
     this.alwaysOnTop = !this.alwaysOnTop;
-    this.savePaper();
+    this.savePaper(true);
     const win: window.Window | undefined = this.currentWindow();
     if (win !== undefined) {
       win.setWindowTopmost(this.alwaysOnTop).catch((error: BusinessError): void => {
@@ -184,7 +253,8 @@ struct Paper {
       return;
     }
     this.paper.isVisible = false;
-    this.savePaper();
+    this.savePaper(true);
+    PaperStore.flushNow();
     this.hostContext().terminateSelf();
   }
 
@@ -194,11 +264,16 @@ struct Paper {
       return;
     }
     PaperStore.deletePaper(this.paperId);
+    PaperStore.flushNow();
     this.hostContext().terminateSelf();
   }
 
   private createPaper(type: string): void {
-    const created: PaperData = PaperStore.createPaper(type);
+    const created: PaperData | null = PaperStore.createPaper(type, this.paperId);
+    if (created === null) {
+      this.statusMessage = '无法继续新建纸片：已达数量上限或数据处于保护状态';
+      return;
+    }
     const want: Want = {
       bundleName: 'com.snownico.papertodo',
       moduleName: 'entry',
@@ -209,7 +284,7 @@ struct Paper {
       }
     };
     this.hostContext().startAbility(want).catch((error: BusinessError): void => {
-      console.error('start new paper failed: ' + error.message);
+      this.statusMessage = '新建纸片失败：' + error.message;
     });
   }
 
@@ -243,16 +318,6 @@ struct Paper {
     return 'MD+';
   }
 
-  private onMarkdownModeChanged(): void {
-    this.refreshMarkdown();
-  }
-
-  private onDeepCapsuleChanged(): void {
-    if (this.isCollapsed) {
-      this.snapCapsule(false);
-    }
-  }
-
   private setCollapsed(collapsed: boolean): void {
     if (collapsed && !this.useCapsuleMode) {
       return;
@@ -262,25 +327,45 @@ struct Paper {
     }
     this.isCollapsed = collapsed;
     this.paper.isCollapsed = collapsed;
-    this.savePaper();
+    this.savePaper(true);
+    if (collapsed) {
+      this.syncCollapsedWindow(false);
+    } else {
+      this.restoreExpandedWindow();
+    }
+  }
 
+  private restoreExpandedWindow(): void {
+    if (this.paper === null) {
+      return;
+    }
     const win: window.Window | undefined = this.currentWindow();
     if (win === undefined) {
       return;
     }
-    if (collapsed) {
-      win.resize(CAPSULE_WIDTH, CAPSULE_HEIGHT);
-      if (this.useDeepCapsuleMode) {
-        setTimeout((): void => this.snapCapsule(false), 80);
-      }
+    this.layoutWidth = this.paper.expandedWidth;
+    win.resize(Math.round(this.paper.expandedWidth), Math.round(this.paper.expandedHeight));
+    win.moveWindowTo(Math.round(this.paper.expandedX), Math.round(this.paper.expandedY));
+  }
+
+  private syncCollapsedWindow(hovered: boolean): void {
+    if (!this.isCollapsed || this.paper === null) {
+      return;
+    }
+    const win: window.Window | undefined = this.currentWindow();
+    if (win === undefined) {
+      return;
+    }
+    win.resize(CAPSULE_WIDTH, CAPSULE_HEIGHT);
+    if (this.useDeepCapsuleMode) {
+      this.snapCapsule(hovered);
     } else {
-      win.resize(Math.round(this.paper.width), Math.round(this.paper.height));
-      win.moveWindowTo(Math.round(this.paper.x), Math.round(this.paper.y));
+      this.moveFloatingCapsule();
     }
   }
 
-  private snapCapsule(hovered: boolean): void {
-    if (!this.isCollapsed || !this.useDeepCapsuleMode) {
+  private moveFloatingCapsule(): void {
+    if (this.paper === null) {
       return;
     }
     const win: window.Window | undefined = this.currentWindow();
@@ -288,21 +373,52 @@ struct Paper {
       return;
     }
     const screen: display.Display = display.getDefaultDisplaySync();
+    this.paper.capsuleX = this.clamp(this.paper.capsuleX, 0, Math.max(0, screen.width - CAPSULE_WIDTH));
+    this.paper.capsuleY = this.clamp(this.paper.capsuleY, 0, Math.max(0, screen.height - CAPSULE_HEIGHT));
+    PaperStore.updatePaper(this.paper, false);
+    win.moveWindowTo(Math.round(this.paper.capsuleX), Math.round(this.paper.capsuleY));
+  }
+
+  private snapCapsule(hovered: boolean): void {
+    if (!this.isCollapsed || !this.useDeepCapsuleMode || this.paper === null) {
+      return;
+    }
+    const win: window.Window | undefined = this.currentWindow();
+    if (win === undefined) {
+      return;
+    }
+    const screen: display.Display = display.getDefaultDisplaySync();
+    const fullX: number = Math.max(0, screen.width - CAPSULE_WIDTH);
     const hidden: number = hovered ? 0 : Math.round(CAPSULE_WIDTH * 0.45);
-    const targetX: number = screen.width - CAPSULE_WIDTH + hidden;
     const index: number = PaperStore.getCollapsedIndex(this.paperId);
-    const targetY: number = 20 + index * (CAPSULE_HEIGHT + 8);
-    win.moveWindowTo(targetX, targetY);
+    const targetY: number = 20 + index * (CAPSULE_HEIGHT + this.capsuleGap);
+    if (this.paper.capsuleX !== fullX || this.paper.capsuleY !== targetY) {
+      this.paper.capsuleX = fullX;
+      this.paper.capsuleY = targetY;
+      PaperStore.updatePaper(this.paper, false);
+    }
+    win.moveWindowTo(fullX + hidden, targetY);
   }
 
   private beginMove(): void {
     if (this.paper === null) {
       return;
     }
-    this.moveBaseX = this.paper.x;
-    this.moveBaseY = this.paper.y;
-    this.moveCurrentX = this.paper.x;
-    this.moveCurrentY = this.paper.y;
+    if (this.isCollapsed) {
+      if (this.useDeepCapsuleMode) {
+        const screen: display.Display = display.getDefaultDisplaySync();
+        this.moveBaseX = Math.max(0, screen.width - CAPSULE_WIDTH);
+        this.moveBaseY = this.paper.capsuleY;
+      } else {
+        this.moveBaseX = this.paper.capsuleX;
+        this.moveBaseY = this.paper.capsuleY;
+      }
+    } else {
+      this.moveBaseX = this.paper.expandedX;
+      this.moveBaseY = this.paper.expandedY;
+    }
+    this.moveCurrentX = this.moveBaseX;
+    this.moveCurrentY = this.moveBaseY;
   }
 
   private updateMove(event: GestureEvent): void {
@@ -319,66 +435,110 @@ struct Paper {
     if (this.paper === null) {
       return;
     }
-    this.paper.x = this.moveCurrentX;
-    this.paper.y = this.moveCurrentY;
-    PaperStore.updatePaper(this.paper);
-    if (this.isCollapsed && this.useDeepCapsuleMode) {
-      this.snapCapsule(false);
+    if (this.isCollapsed) {
+      if (this.useDeepCapsuleMode) {
+        const desiredIndex: number = Math.max(0,
+          Math.round((this.moveCurrentY - 20) / (CAPSULE_HEIGHT + this.capsuleGap)));
+        PaperStore.moveCollapsedPaper(this.paperId, desiredIndex);
+        const latest: PaperData | null = PaperStore.getPaper(this.paperId);
+        if (latest !== null) {
+          this.paper = latest;
+        }
+        this.snapCapsule(false);
+      } else {
+        this.paper.capsuleX = this.moveCurrentX;
+        this.paper.capsuleY = this.moveCurrentY;
+        PaperStore.updatePaper(this.paper, false);
+      }
+      return;
     }
+
+    this.paper.expandedX = this.moveCurrentX;
+    this.paper.expandedY = this.moveCurrentY;
+    PaperStore.updatePaper(this.paper, false);
   }
 
   private beginResize(): void {
-    if (this.paper === null) {
+    if (this.paper === null || this.isCollapsed) {
       return;
     }
-    this.resizeBaseWidth = this.paper.width;
-    this.resizeBaseHeight = this.paper.height;
-    this.resizeCurrentWidth = this.paper.width;
-    this.resizeCurrentHeight = this.paper.height;
+    this.resizeBaseWidth = this.paper.expandedWidth;
+    this.resizeBaseHeight = this.paper.expandedHeight;
+    this.resizeCurrentWidth = this.paper.expandedWidth;
+    this.resizeCurrentHeight = this.paper.expandedHeight;
   }
 
   private updateResize(event: GestureEvent): void {
+    if (this.isCollapsed) {
+      return;
+    }
     const win: window.Window | undefined = this.currentWindow();
     if (win === undefined) {
       return;
     }
     this.resizeCurrentWidth = Math.max(PAPER_MIN_WIDTH, Math.round(this.resizeBaseWidth + event.offsetX));
     this.resizeCurrentHeight = Math.max(PAPER_MIN_HEIGHT, Math.round(this.resizeBaseHeight + event.offsetY));
+    this.layoutWidth = this.resizeCurrentWidth;
     win.resize(this.resizeCurrentWidth, this.resizeCurrentHeight);
   }
 
   private endResize(): void {
-    if (this.paper === null) {
+    if (this.paper === null || this.isCollapsed) {
       return;
     }
-    this.paper.width = this.resizeCurrentWidth;
-    this.paper.height = this.resizeCurrentHeight;
-    PaperStore.updatePaper(this.paper);
+    this.paper.expandedWidth = this.resizeCurrentWidth;
+    this.paper.expandedHeight = this.resizeCurrentHeight;
+    PaperStore.updatePaper(this.paper, false);
   }
 
   private toggleTodo(id: string): void {
-    const next: PaperItem[] = [];
+    let changed: PaperItem | null = null;
+    const remaining: PaperItem[] = [];
     for (let i: number = 0; i < this.items.length; i++) {
       const item: PaperItem = this.items[i];
-      next.push({
-        id: item.id,
-        text: item.text,
-        done: item.id === id ? !item.done : item.done,
-        order: i
-      });
+      if (item.id === id) {
+        changed = { id: item.id, text: item.text, done: !item.done, order: item.order };
+      } else {
+        remaining.push({ id: item.id, text: item.text, done: item.done, order: item.order });
+      }
     }
-    this.items = next;
-    this.savePaper();
+    if (changed === null) {
+      return;
+    }
+
+    if (!this.autoBottomCompleted) {
+      const next: PaperItem[] = [];
+      for (let i: number = 0; i < this.items.length; i++) {
+        const item: PaperItem = this.items[i];
+        next.push(item.id === id ? changed : { id: item.id, text: item.text, done: item.done, order: item.order });
+      }
+      this.items = this.renumberItems(next);
+    } else if (changed.done) {
+      remaining.push(changed);
+      this.items = this.renumberItems(remaining);
+    } else {
+      let insertion: number = remaining.length;
+      for (let i: number = 0; i < remaining.length; i++) {
+        if (remaining[i].done) {
+          insertion = i;
+          break;
+        }
+      }
+      remaining.splice(insertion, 0, changed);
+      this.items = this.renumberItems(remaining);
+    }
+    this.savePaper(false);
   }
 
   private updateTodoText(id: string, text: string): void {
+    const safeText: string = text.slice(0, TODO_ITEM_MAX_LENGTH);
     const next: PaperItem[] = [];
     for (let i: number = 0; i < this.items.length; i++) {
       const item: PaperItem = this.items[i];
-      next.push({ id: item.id, text: item.id === id ? text : item.text, done: item.done, order: i });
+      next.push({ id: item.id, text: item.id === id ? safeText : item.text, done: item.done, order: i });
     }
     this.items = next;
-    this.savePaper();
+    this.savePaper(false);
   }
 
   private deleteTodo(id: string): void {
@@ -393,7 +553,7 @@ struct Paper {
       next.push(PaperStore.createTodoItem('', 0));
     }
     this.items = next;
-    this.savePaper();
+    this.savePaper(false);
   }
 
   private insertTodoAfter(id: string): void {
@@ -406,7 +566,7 @@ struct Paper {
       }
     }
     this.items = next;
-    this.savePaper();
+    this.savePaper(false);
   }
 
   private clearCompleted(): void {
@@ -421,7 +581,7 @@ struct Paper {
       next.push(PaperStore.createTodoItem('', 0));
     }
     this.items = next;
-    this.savePaper();
+    this.savePaper(false);
   }
 
   private moveTodo(from: number, to: number): void {
@@ -431,11 +591,16 @@ struct Paper {
     const next: PaperItem[] = this.items.slice();
     const moved: PaperItem[] = next.splice(from, 1);
     next.splice(to, 0, moved[0]);
-    for (let i: number = 0; i < next.length; i++) {
-      next[i].order = i;
+    this.items = this.renumberItems(next);
+    this.savePaper(false);
+  }
+
+  private renumberItems(items: PaperItem[]): PaperItem[] {
+    const next: PaperItem[] = [];
+    for (let i: number = 0; i < items.length; i++) {
+      next.push({ id: items[i].id, text: items[i].text, done: items[i].done, order: i });
     }
-    this.items = next;
-    this.savePaper();
+    return next;
   }
 
   private addDraftTodos(): void {
@@ -443,8 +608,8 @@ struct Paper {
     const lines: string[] = raw.split('\n');
     const next: PaperItem[] = this.items.slice();
     let added: number = 0;
-    for (let i: number = 0; i < lines.length; i++) {
-      const cleaned: string = this.cleanTodoPrefix(lines[i]).trim();
+    for (let i: number = 0; i < lines.length && added < TODO_PASTE_MAX_ITEMS; i++) {
+      const cleaned: string = this.cleanTodoPrefix(lines[i]).trim().slice(0, TODO_ITEM_MAX_LENGTH);
       if (cleaned.length === 0) {
         continue;
       }
@@ -454,9 +619,12 @@ struct Paper {
     if (added === 0 && raw.trim().length === 0) {
       next.push(PaperStore.createTodoItem('', next.length));
     }
-    this.items = next;
+    if (lines.length > TODO_PASTE_MAX_ITEMS) {
+      this.statusMessage = '单次最多添加 ' + TODO_PASTE_MAX_ITEMS.toString() + ' 条待办';
+    }
+    this.items = this.renumberItems(next);
     this.draft = '';
-    this.savePaper();
+    this.savePaper(false);
   }
 
   private cleanTodoPrefix(text: string): string {
@@ -469,8 +637,11 @@ struct Paper {
   }
 
   private updateNote(value: string): void {
-    this.content = value;
-    this.savePaper();
+    this.content = value.slice(0, NOTE_MAX_LENGTH);
+    if (value.length > NOTE_MAX_LENGTH) {
+      this.statusMessage = '笔记已达到安全长度上限';
+    }
+    this.savePaper(false);
   }
 
   private toggleNoteBrowse(): void {
@@ -483,11 +654,13 @@ struct Paper {
   }
 
   private appendMarkdown(snippet: string): void {
-    if (this.content.length > 0 && !this.content.endsWith('\n')) {
-      this.content += '\n';
+    let next: string = this.content;
+    if (next.length > 0 && !next.endsWith('\n')) {
+      next += '\n';
     }
-    this.content += snippet;
-    this.savePaper();
+    next += snippet;
+    this.content = next.slice(0, NOTE_MAX_LENGTH);
+    this.savePaper(false);
   }
 
   private headingSize(level: number): number {
@@ -501,6 +674,10 @@ struct Paper {
       return 19;
     }
     return 16;
+  }
+
+  private clamp(value: number, minValue: number, maxValue: number): number {
+    return Math.max(minValue, Math.min(value, maxValue));
   }
 
   @Builder
@@ -519,10 +696,10 @@ struct Paper {
             .onActionEnd((): void => this.endMove())
         )
 
-      Button(this.alwaysOnTop ? this.typeLabel() : '○')
+      Button(this.pinLabel())
         .width(30)
         .height(30)
-        .fontSize(14)
+        .fontSize(13)
         .fontColor(this.textColor())
         .backgroundColor(Color.Transparent)
         .onClick((): void => this.toggleTopmost())
@@ -539,11 +716,11 @@ struct Paper {
         .backgroundColor(Color.Transparent)
         .padding(0)
         .onChange((value: string): void => {
-          this.title = value;
-          this.savePaper();
+          this.title = value.slice(0, TITLE_MAX_LENGTH);
+          this.savePaper(false);
         })
 
-      if (this.paper !== null && this.paper.type === PAPER_TYPE_NOTE) {
+      if (this.paper !== null && this.paper.type === PAPER_TYPE_NOTE && this.layoutWidth >= 320) {
         Button(this.isNoteBrowsing ? '编' : '览')
           .width(30)
           .height(30)
@@ -551,6 +728,8 @@ struct Paper {
           .fontColor(this.textColor())
           .backgroundColor(Color.Transparent)
           .onClick((): void => this.toggleNoteBrowse())
+      }
+      if (this.paper !== null && this.paper.type === PAPER_TYPE_NOTE && this.layoutWidth >= 380) {
         Button(this.markdownModeLabel())
           .width(38)
           .height(30)
@@ -559,16 +738,16 @@ struct Paper {
           .backgroundColor(Color.Transparent)
           .onClick((): void => this.cycleMarkdownMode())
       }
-
-      Button('◐')
-        .width(30)
-        .height(30)
-        .fontSize(12)
-        .fontColor(this.textColor())
-        .backgroundColor(Color.Transparent)
-        .onClick((): void => this.cycleTheme())
-
-      if (this.useCapsuleMode) {
+      if (this.layoutWidth >= 430) {
+        Button('◐')
+          .width(30)
+          .height(30)
+          .fontSize(12)
+          .fontColor(this.textColor())
+          .backgroundColor(Color.Transparent)
+          .onClick((): void => this.cycleTheme())
+      }
+      if (this.useCapsuleMode && this.layoutWidth >= 470) {
         Button('▁')
           .width(30)
           .height(30)
@@ -577,22 +756,35 @@ struct Paper {
           .backgroundColor(Color.Transparent)
           .onClick((): void => this.setCollapsed(true))
       }
-
-      Button('☑+')
-        .width(34)
-        .height(30)
-        .fontSize(10)
-        .fontColor(this.textColor())
-        .backgroundColor(Color.Transparent)
-        .onClick((): void => this.createPaper(PAPER_TYPE_TODO))
-
-      Button('✎+')
-        .width(34)
-        .height(30)
-        .fontSize(10)
-        .fontColor(this.textColor())
-        .backgroundColor(Color.Transparent)
-        .onClick((): void => this.createPaper(PAPER_TYPE_NOTE))
+      if (this.layoutWidth >= 540) {
+        Button('☑+')
+          .width(34)
+          .height(30)
+          .fontSize(10)
+          .fontColor(this.textColor())
+          .backgroundColor(Color.Transparent)
+          .onClick((): void => this.createPaper(PAPER_TYPE_TODO))
+      }
+      if (this.layoutWidth >= 580) {
+        Button('✎+')
+          .width(34)
+          .height(30)
+          .fontSize(10)
+          .fontColor(this.textColor())
+          .backgroundColor(Color.Transparent)
+          .onClick((): void => this.createPaper(PAPER_TYPE_NOTE))
+      }
+      if (this.layoutWidth < 580) {
+        Button('⋯')
+          .width(30)
+          .height(30)
+          .fontSize(14)
+          .fontColor(this.textColor())
+          .backgroundColor(Color.Transparent)
+          .onClick((): void => {
+            this.showMoreActions = !this.showMoreActions;
+          })
+      }
 
       Button('—')
         .width(28)
@@ -613,6 +805,47 @@ struct Paper {
     .width('100%')
     .height(34)
     .padding({ left: 6, right: 6 })
+  }
+
+  @Builder
+  private MoreActionsBar() {
+    Scroll() {
+      Row({ space: 4 }) {
+        if (this.paper !== null && this.paper.type === PAPER_TYPE_NOTE) {
+          Button(this.isNoteBrowsing ? '编辑' : '浏览')
+            .height(28)
+            .fontSize(10)
+            .onClick((): void => this.toggleNoteBrowse())
+          Button(this.markdownModeLabel())
+            .height(28)
+            .fontSize(10)
+            .onClick((): void => this.cycleMarkdownMode())
+        }
+        Button('主题')
+          .height(28)
+          .fontSize(10)
+          .onClick((): void => this.cycleTheme())
+        if (this.useCapsuleMode) {
+          Button('折叠')
+            .height(28)
+            .fontSize(10)
+            .onClick((): void => this.setCollapsed(true))
+        }
+        Button('新待办')
+          .height(28)
+          .fontSize(10)
+          .onClick((): void => this.createPaper(PAPER_TYPE_TODO))
+        Button('新笔记')
+          .height(28)
+          .fontSize(10)
+          .onClick((): void => this.createPaper(PAPER_TYPE_NOTE))
+      }
+      .padding({ left: 8, right: 8 })
+    }
+    .width('100%')
+    .height(34)
+    .scrollable(ScrollDirection.Horizontal)
+    .scrollBar(BarState.Off)
   }
 
   @Builder
@@ -650,8 +883,8 @@ struct Paper {
 
               TextInput({ text: item.text, placeholder: '待办事项' })
                 .layoutWeight(1)
-                .height(34)
-                .fontSize(14)
+                .height(this.todoRowHeight() - 6)
+                .fontSize(this.todoFontSize())
                 .fontColor(item.done ? this.mutedColor() : this.textColor())
                 .placeholderColor(this.mutedColor())
                 .backgroundColor(Color.Transparent)
@@ -674,7 +907,7 @@ struct Paper {
                 .onClick((): void => this.deleteTodo(item.id))
             }
             .width('100%')
-            .height(40)
+            .height(this.todoRowHeight())
             .padding({ left: 8, right: 4 })
           }
           .editable(true)
@@ -871,7 +1104,18 @@ struct Paper {
     } else {
       Column() {
         this.HeaderBar()
+        if (this.showMoreActions) {
+          this.MoreActionsBar()
+        }
         Divider().color(this.paperBorderColor()).opacity(0.45)
+        if (this.statusMessage.length > 0) {
+          Text(this.statusMessage)
+            .width('100%')
+            .fontSize(10)
+            .fontColor(this.mutedColor())
+            .padding({ left: 10, right: 10, top: 4 })
+            .maxLines(2)
+        }
         if (this.paper !== null && this.paper.type === PAPER_TYPE_NOTE) {
           this.NoteBody()
         } else {
