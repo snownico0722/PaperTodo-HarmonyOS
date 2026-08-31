@@ -88,7 +88,7 @@ jobs:
         run: |
           curl --fail --location --retry 3 \
             --output tools.zip \
-            https://github.com/Okysu/harmony-auto-build/releases/download/commandline-tools-linux-x64-6.1.0.816/commandline-tools-linux-x64-6.1.0.816.zip
+            https://github.com/Okysu/harmony-auto-build/releases/download/commandline-tools-linux-x64-6.1.0.816/command-line-tools-linux-x64-6.1.0.816.zip
           echo "4b21e8a4ce19fc7eb381425a570e936c80067b8a0bef9cdcfe8a49e4764038e2  tools.zip" | sha256sum --check -
           unzip -q tools.zip
           rm tools.zip
@@ -131,14 +131,32 @@ jobs:
 
           ACCESS_TOKEN="$(jq -er '.access_token' <<<"$TOKEN_RESPONSE")"
           echo "::add-mask::$ACCESS_TOKEN"
+          echo 'AGC access token acquired successfully.'
 
-          PROFILE_RESPONSE="$(curl --silent --show-error --fail-with-body \
+          TMP_BODY="$(mktemp)"
+          HTTP_STATUS="$(curl --silent --show-error \
+            --output "$TMP_BODY" \
+            --write-out '%{http_code}' \
             --request GET \
             --header "client_id: $AGC_API_CLIENT_ID" \
             --header "Authorization: Bearer $ACCESS_TOKEN" \
             --header "appId: $AGC_APP_ID" \
             --header 'Content-Type: application/json' \
             'https://connect-api.cloud.huawei.com/api/publish/v3/provision/list?fromRecCount=1&maxReqCount=10')"
+
+          PROFILE_RESPONSE="$(cat "$TMP_BODY")"
+          rm -f "$TMP_BODY"
+
+          if [[ "$HTTP_STATUS" != '200' ]]; then
+            echo "AGC Provisioning API HTTP status: $HTTP_STATUS" >&2
+            if jq -e . >/dev/null 2>&1 <<<"$PROFILE_RESPONSE"; then
+              jq '{ret: (.ret // null), code: (.code // null), message: (.message // .msg // null)}' \
+                <<<"$PROFILE_RESPONSE" >&2
+            else
+              echo 'AGC returned a non-JSON error body (suppressed).' >&2
+            fi
+            exit 1
+          fi
 
           RET_CODE="$(jq -r '.ret.code // -1' <<<"$PROFILE_RESPONSE")"
           if [[ "$RET_CODE" != '0' ]]; then
@@ -154,9 +172,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Build workflow already covers debug HAP. Package workflow defaults to
-          # release so every PR also exercises release optimization and emits the
-          # closest possible cloud-test candidate before developer signing.
           BUILD_MODE="release"
           SOURCE_SHA="$GITHUB_SHA"
 
