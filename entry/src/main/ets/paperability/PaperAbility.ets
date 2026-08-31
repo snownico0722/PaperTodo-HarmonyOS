@@ -103,16 +103,16 @@ export default class PaperAbility extends UIAbility {
     }
 
     this.prepareMainWindow(windowStage).then((): void => {
-      windowStage.loadContent('pages/Paper', this.storage, (err: BusinessError): void => {
+      windowStage.loadContent('pages/PaperDesktop', this.storage, (err: BusinessError): void => {
         if (err.code !== 0) {
-          hilog.error(DOMAIN, TAG, 'Failed to load Paper page: %{public}s', JSON.stringify(err));
+          hilog.error(DOMAIN, TAG, 'Failed to load PaperDesktop page: %{public}s', JSON.stringify(err));
         }
       });
     }).catch((error: Error): void => {
       hilog.error(DOMAIN, TAG, 'prepare Paper window failed: %{public}s', error.message);
-      windowStage.loadContent('pages/Paper', this.storage, (err: BusinessError): void => {
+      windowStage.loadContent('pages/PaperDesktop', this.storage, (err: BusinessError): void => {
         if (err.code !== 0) {
-          hilog.error(DOMAIN, TAG, 'Failed to load Paper page after fallback: %{public}s', JSON.stringify(err));
+          hilog.error(DOMAIN, TAG, 'Failed to load PaperDesktop page after fallback: %{public}s', JSON.stringify(err));
         }
       });
     });
@@ -173,9 +173,6 @@ export default class PaperAbility extends UIAbility {
       return;
     }
 
-    // supportWindowMode in module.json5 only declares capability. On PC/2in1 the
-    // actual main window can still start in a system-managed mode. Force this
-    // PaperAbility to the floating mode before stripping its system decoration.
     try {
       await windowStage.setSupportedWindowModes([bundleManager.SupportWindowMode.FLOATING]);
     } catch (error) {
@@ -190,8 +187,6 @@ export default class PaperAbility extends UIAbility {
     try {
       await mainWindow.recover();
     } catch (error) {
-      // recover can reject when the window is already floating. Decoration and
-      // geometry still need to be applied below.
       hilog.warn(DOMAIN, TAG, 'recover floating window skipped/failed: %{public}s', String(error));
     }
 
@@ -259,16 +254,8 @@ export default class PaperAbility extends UIAbility {
         xPx = edgeCapsuleHiddenX(metrics);
         yPx = edgeCapsuleY(index, metrics);
       } else {
-        paper.capsuleX = this.clamp(
-          paper.capsuleX,
-          0,
-          Math.max(0, displayGeometry.screenWidthVp - CAPSULE_WIDTH)
-        );
-        paper.capsuleY = this.clamp(
-          paper.capsuleY,
-          0,
-          Math.max(0, displayGeometry.screenHeightVp - CAPSULE_HEIGHT)
-        );
+        paper.capsuleX = this.clamp(paper.capsuleX, 0, Math.max(0, displayGeometry.screenWidthVp - CAPSULE_WIDTH));
+        paper.capsuleY = this.clamp(paper.capsuleY, 0, Math.max(0, displayGeometry.screenHeightVp - CAPSULE_HEIGHT));
         xPx = vpToPx(paper.capsuleX, displayGeometry.density);
         yPx = vpToPx(paper.capsuleY, displayGeometry.density);
       }
