@@ -34,7 +34,6 @@ jobs:
         with:
           path: command-line-tools
           key: ${{ runner.os }}-harmonyos-cli-6.1.0.816
-          save-always: true
 
       - name: Download HarmonyOS Command Line Tools
         if: steps.cache-tools.outputs.cache-hit != 'true'
@@ -49,6 +48,7 @@ jobs:
       - name: Setup HarmonyOS build environment
         shell: bash
         run: |
+          set -euo pipefail
           TOOLS_DIR="$GITHUB_WORKSPACE/command-line-tools"
           echo "hwsdk.dir=$TOOLS_DIR/sdk" > local.properties
           echo "$TOOLS_DIR/bin" >> "$GITHUB_PATH"
