@@ -14,6 +14,9 @@
     "requestPermissions": [
       {
         "name": "ohos.permission.WINDOW_TOPMOST"
+      },
+      {
+        "name": "ohos.permission.SET_WINDOW_TRANSPARENT"
       }
     ],
     "abilities": [
@@ -27,8 +30,6 @@
         "startWindowBackground": "$color:start_window_background",
         "launchType": "singleton",
         "supportWindowMode": [
-          "fullscreen",
-          "split",
           "floating"
         ],
         "exported": true,
@@ -42,6 +43,22 @@
             ]
           }
         ]
+      },
+      {
+        "name": "ManagerAbility",
+        "srcEntry": "./ets/managerability/ManagerAbility.ets",
+        "description": "$string:EntryAbility_desc",
+        "icon": "$media:app_icon",
+        "label": "$string:EntryAbility_label",
+        "startWindowIcon": "$media:app_icon",
+        "startWindowBackground": "$color:start_window_background",
+        "launchType": "singleton",
+        "supportWindowMode": [
+          "fullscreen",
+          "split",
+          "floating"
+        ],
+        "exported": false
       },
       {
         "name": "PaperAbility",
