@@ -15,14 +15,25 @@ const DOMAIN: number = 0x0000;
 const TAG: string = 'PaperTodo';
 
 export default class EntryAbility extends UIAbility {
+  private mainWindow: window.Window | null = null;
+
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     PaperStore.initialize(this.context);
     AppStorage.setOrCreate<number>('systemColorMode', this.context.config.colorMode ??
       ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT);
   }
 
+  onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    this.showManagerWindow();
+  }
+
   onWindowStageCreate(windowStage: window.WindowStage): void {
     hilog.info(DOMAIN, TAG, '%{public}s', 'Window stage created');
+    try {
+      this.mainWindow = windowStage.getMainWindowSync();
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'get manager window failed: %{public}s', String(error));
+    }
 
     windowStage.loadContent('pages/Index', (err: BusinessError): void => {
       if (err.code !== 0) {
@@ -41,6 +52,7 @@ export default class EntryAbility extends UIAbility {
 
   onDestroy(): void {
     PaperStore.flushNow();
+    this.mainWindow = null;
   }
 
   onConfigurationUpdate(config: Configuration): void {
@@ -71,14 +83,14 @@ export default class EntryAbility extends UIAbility {
       }
     }
 
-    // hideAbility/showAbility require the app to be attached to a system status-bar
-    // item. PaperTodo does not use that launch mode. On 2in1, close only the manager
-    // UIAbility after at least one independent paper was started successfully.
-    if (deviceInfo.deviceType === '2in1' && succeeded > 0) {
+    // showAbility/hideAbility require the special status-bar launch mode. PaperTodo
+    // instead keeps a normal singleton manager window: minimize it after papers start,
+    // and restore the same window via showWindow when the app icon is invoked again.
+    if (deviceInfo.deviceType === '2in1' && succeeded > 0 && this.mainWindow !== null) {
       try {
-        await this.context.terminateSelf();
+        await this.mainWindow.minimize();
       } catch (error) {
-        hilog.warn(DOMAIN, TAG, 'terminate manager failed: %{public}s', String(error));
+        hilog.warn(DOMAIN, TAG, 'minimize manager failed: %{public}s', String(error));
       }
     }
   }
@@ -98,6 +110,19 @@ export default class EntryAbility extends UIAbility {
     } catch (error) {
       hilog.error(DOMAIN, TAG, 'start PaperAbility failed: %{public}s', String(error));
       return false;
+    }
+  }
+
+  private showManagerWindow(): void {
+    if (this.mainWindow === null) {
+      return;
+    }
+    try {
+      this.mainWindow.showWindow().catch((error: BusinessError): void => {
+        hilog.warn(DOMAIN, TAG, 'show manager window failed: %{public}s', error.message);
+      });
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'show manager window threw: %{public}s', String(error));
     }
   }
 }
