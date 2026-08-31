@@ -25,7 +25,6 @@ const TAG: string = 'PaperTodo';
 
 export default class EntryAbility extends UIAbility {
   private hostWindow: window.Window | null = null;
-  private statusBarReady: boolean = false;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     PaperStore.initialize(this.context);
@@ -105,14 +104,10 @@ export default class EntryAbility extends UIAbility {
   }
 
   private async bootstrapDesktop(): Promise<void> {
-    this.statusBarReady = await this.ensureStatusBar();
+    // 状态栏注册失败也不再自动弹大管理器；管理中心只允许显式打开。
+    await this.ensureStatusBar();
     await this.restoreVisiblePapers();
     await this.minimizeHostWindow();
-
-    // 仅当系统状态栏注册失败时，才退回传统管理窗口，避免应用完全不可操作。
-    if (deviceInfo.deviceType === '2in1' && !this.statusBarReady) {
-      this.openManager();
-    }
   }
 
   private async ensureStatusBar(): Promise<boolean> {
