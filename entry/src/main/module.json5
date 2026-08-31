@@ -4,6 +4,7 @@
     "type": "entry",
     "description": "$string:module_desc",
     "mainElement": "EntryAbility",
+    "srcEntry": "./ets/abilitystage/PaperTodoAbilityStage.ets",
     "deviceTypes": [
       "phone",
       "tablet",
@@ -12,6 +13,11 @@
     "deliveryWithInstall": true,
     "installationFree": false,
     "pages": "$profile:main_pages",
+    "requestPermissions": [
+      {
+        "name": "ohos.permission.WINDOW_TOPMOST"
+      }
+    ],
     "abilities": [
       {
         "name": "EntryAbility",
@@ -21,6 +27,12 @@
         "label": "$string:EntryAbility_label",
         "startWindowIcon": "$media:app_icon",
         "startWindowBackground": "$color:start_window_background",
+        "launchType": "singleton",
+        "supportWindowMode": [
+          "fullscreen",
+          "split",
+          "floating"
+        ],
         "exported": true,
         "skills": [
           {
@@ -32,6 +44,21 @@
             ]
           }
         ]
+      },
+      {
+        "name": "PaperAbility",
+        "srcEntry": "./ets/paperability/PaperAbility.ets",
+        "description": "$string:EntryAbility_desc",
+        "icon": "$media:app_icon",
+        "label": "$string:EntryAbility_label",
+        "startWindowIcon": "$media:app_icon",
+        "startWindowBackground": "$color:start_window_background",
+        "launchType": "specified",
+        "supportWindowMode": [
+          "floating",
+          "fullscreen"
+        ],
+        "exported": false
       }
     ]
   }
