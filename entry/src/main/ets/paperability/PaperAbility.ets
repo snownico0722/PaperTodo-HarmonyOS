@@ -106,14 +106,22 @@ export default class PaperAbility extends UIAbility {
       windowStage.loadContent('pages/PaperDesktop', this.storage, (err: BusinessError): void => {
         if (err.code !== 0) {
           hilog.error(DOMAIN, TAG, 'Failed to load PaperDesktop page: %{public}s', JSON.stringify(err));
+          return;
         }
+        this.finalizeMainWindow().catch((error: Error): void => {
+          hilog.warn(DOMAIN, TAG, 'finalize Paper window failed: %{public}s', error.message);
+        });
       });
     }).catch((error: Error): void => {
       hilog.error(DOMAIN, TAG, 'prepare Paper window failed: %{public}s', error.message);
       windowStage.loadContent('pages/PaperDesktop', this.storage, (err: BusinessError): void => {
         if (err.code !== 0) {
           hilog.error(DOMAIN, TAG, 'Failed to load PaperDesktop page after fallback: %{public}s', JSON.stringify(err));
+          return;
         }
+        this.finalizeMainWindow().catch((finalError: Error): void => {
+          hilog.warn(DOMAIN, TAG, 'fallback finalize failed: %{public}s', finalError.message);
+        });
       });
     });
   }
@@ -190,22 +198,50 @@ export default class PaperAbility extends UIAbility {
       hilog.warn(DOMAIN, TAG, 'recover floating window skipped/failed: %{public}s', String(error));
     }
 
-    try {
-      mainWindow.setWindowDecorVisible(false);
-      mainWindow.setWindowTitleButtonVisible(false, false, false);
-      mainWindow.setWindowDecorHeight(0);
-      mainWindow.setWindowBackgroundColor('#00000000');
-    } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'configure frameless paper failed: %{public}s', String(error));
+    // 在页面加载前先尽量去掉系统装饰，减少首帧闪出系统标题栏。
+    this.applyBasicFramelessStyle(mainWindow);
+    await this.applyStoredGeometry(mainWindow);
+  }
+
+  private async finalizeMainWindow(): Promise<void> {
+    const mainWindow: window.Window | null = this.mainWindow;
+    const paper: PaperData | null = PaperStore.getPaper(this.paperId);
+    if (mainWindow === null || paper === null) {
+      return;
     }
 
-    await this.applyStoredGeometry(mainWindow);
+    // setWindowContainerColor 在自由多窗设备上必须在 loadContent/setUIContent 后调用。
+    this.applyBasicFramelessStyle(mainWindow);
+    try {
+      mainWindow.setWindowContainerColor('#00000000', '#00000000');
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'setWindowContainerColor failed: %{public}s', String(error));
+    }
+    try {
+      await mainWindow.setWindowShadowEnabled(false);
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'setWindowShadowEnabled(false) failed: %{public}s', String(error));
+    }
+
     try {
       await mainWindow.setWindowTopmost(paper.alwaysOnTop);
     } catch (error) {
       hilog.warn(DOMAIN, TAG, 'setWindowTopmost failed: %{public}s', String(error));
     }
     this.registerWindowRectListener(mainWindow);
+  }
+
+  private applyBasicFramelessStyle(mainWindow: window.Window): void {
+    try {
+      mainWindow.setWindowDecorVisible(false);
+      mainWindow.setWindowTitleButtonVisible(false, false, false);
+      mainWindow.setWindowDecorHeight(0);
+      mainWindow.setWindowBackgroundColor('#00000000');
+      mainWindow.setWindowTitleMoveEnabled(false);
+      mainWindow.setResizeByDragEnabled(false);
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'configure frameless paper failed: %{public}s', String(error));
+    }
   }
 
   private async applyStoredGeometry(mainWindow: window.Window): Promise<void> {
