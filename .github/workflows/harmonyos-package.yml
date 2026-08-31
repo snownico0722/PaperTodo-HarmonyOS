@@ -88,7 +88,7 @@ jobs:
         run: |
           curl --fail --location --retry 3 \
             --output tools.zip \
-            https://github.com/Okysu/harmony-auto-build/releases/download/commandline-tools-linux-x64-6.1.0.816/command-line-tools-linux-x64-6.1.0.816.zip
+            https://github.com/Okysu/harmony-auto-build/releases/download/commandline-tools-linux-x64-6.1.0.816/commandline-tools-linux-x64-6.1.0.816.zip
           echo "4b21e8a4ce19fc7eb381425a570e936c80067b8a0bef9cdcfe8a49e4764038e2  tools.zip" | sha256sum --check -
           unzip -q tools.zip
           rm tools.zip
