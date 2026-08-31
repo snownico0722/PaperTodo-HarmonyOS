@@ -50,6 +50,16 @@ struct Index {
     this.draft = '';
   }
 
+  private completedCount(): number {
+    let count: number = 0;
+    this.todos.forEach((item: TodoItem): void => {
+      if (item.done) {
+        count += 1;
+      }
+    });
+    return count;
+  }
+
   build() {
     Column() {
       Column() {
@@ -68,7 +78,7 @@ struct Index {
 
           Blank()
 
-          Text(`${this.todos.filter((item: TodoItem): boolean => item.done).length}/${this.todos.length}`)
+          Text(`${this.completedCount()}/${this.todos.length}`)
             .fontSize(13)
             .fontColor('#746D5D')
         }
