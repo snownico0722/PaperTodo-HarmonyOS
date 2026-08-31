@@ -4,12 +4,17 @@ import {
   MARKDOWN_BASIC,
   MARKDOWN_ENHANCED,
   MARKDOWN_OFF,
+  MAX_PAPERS,
   PAPER_TYPE_NOTE,
   PAPER_TYPE_TODO,
   PaperData,
   THEME_DARK,
   THEME_LIGHT,
-  THEME_SYSTEM
+  THEME_SYSTEM,
+  TODO_VISUAL_LARGE,
+  TODO_VISUAL_MEDIUM,
+  TODO_VISUAL_SMALL,
+  TODO_VISUAL_XLARGE
 } from '../common/Models';
 import { PaperStore } from '../common/PaperStore';
 
@@ -20,6 +25,10 @@ struct Index {
   @StorageLink('markdownRenderMode') markdownRenderMode: string = MARKDOWN_ENHANCED;
   @StorageLink('useCapsuleMode') useCapsuleMode: boolean = true;
   @StorageLink('useDeepCapsuleMode') useDeepCapsuleMode: boolean = true;
+  @StorageLink('todoVisualSize') todoVisualSize: string = TODO_VISUAL_MEDIUM;
+  @StorageLink('autoBottomCompleted') autoBottomCompleted: boolean = false;
+  @StorageLink('capsuleGap') capsuleGap: number = 4;
+  @StorageLink('paperRevision') @Watch('onPaperRevision') paperRevision: number = 0;
   @StorageLink('systemColorMode') systemColorMode: number = ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT;
 
   @State papers: PaperData[] = [];
@@ -29,9 +38,20 @@ struct Index {
   aboutToAppear(): void {
     PaperStore.initialize(this.hostContext());
     this.refresh();
+    if (PaperStore.hasStorageError()) {
+      this.statusMessage = '检测到主数据与备份均异常，已进入数据保护状态，不会用空白数据覆盖原存储。';
+    }
+  }
+
+  aboutToDisappear(): void {
+    PaperStore.flushNow();
   }
 
   onPageShow(): void {
+    this.refresh();
+  }
+
+  private onPaperRevision(): void {
     this.refresh();
   }
 
@@ -101,7 +121,14 @@ struct Index {
   }
 
   private createPaper(type: string): void {
-    const paper: PaperData = PaperStore.createPaper(type);
+    const paper: PaperData | null = PaperStore.createPaper(type);
+    if (paper === null) {
+      this.statusMessage = PaperStore.hasStorageError() ?
+        '数据处于保护状态，暂不允许新建纸片。' :
+        '最多支持 ' + MAX_PAPERS.toString() + ' 张纸片。';
+      return;
+    }
+    this.statusMessage = '';
     this.refresh();
     this.startPaper(paper.id);
   }
@@ -196,19 +223,54 @@ struct Index {
   }
 
   private toggleCapsule(): void {
-    const next: boolean = !this.useCapsuleMode;
-    PaperStore.setCapsuleMode(next);
-    if (!next) {
-      this.restartVisiblePapers();
-    }
-    this.refresh();
+    PaperStore.setCapsuleMode(!this.useCapsuleMode);
   }
 
   private toggleDeepCapsule(): void {
     PaperStore.setDeepCapsuleMode(!this.useDeepCapsuleMode);
   }
 
+  private cycleTodoVisualSize(): void {
+    if (this.todoVisualSize === TODO_VISUAL_SMALL) {
+      PaperStore.setTodoVisualSize(TODO_VISUAL_MEDIUM);
+    } else if (this.todoVisualSize === TODO_VISUAL_MEDIUM) {
+      PaperStore.setTodoVisualSize(TODO_VISUAL_LARGE);
+    } else if (this.todoVisualSize === TODO_VISUAL_LARGE) {
+      PaperStore.setTodoVisualSize(TODO_VISUAL_XLARGE);
+    } else {
+      PaperStore.setTodoVisualSize(TODO_VISUAL_SMALL);
+    }
+  }
+
+  private todoVisualSizeLabel(): string {
+    if (this.todoVisualSize === TODO_VISUAL_SMALL) {
+      return '小';
+    }
+    if (this.todoVisualSize === TODO_VISUAL_LARGE) {
+      return '大';
+    }
+    if (this.todoVisualSize === TODO_VISUAL_XLARGE) {
+      return '特大';
+    }
+    return '中';
+  }
+
+  private toggleAutoBottomCompleted(): void {
+    PaperStore.setAutoBottomCompleted(!this.autoBottomCompleted);
+  }
+
+  private cycleCapsuleGap(): void {
+    if (this.capsuleGap === 0) {
+      PaperStore.setCapsuleGap(4);
+    } else if (this.capsuleGap === 4) {
+      PaperStore.setCapsuleGap(8);
+    } else {
+      PaperStore.setCapsuleGap(0);
+    }
+  }
+
   private restoreBackup(): void {
+    PaperStore.flushNow();
     const current: PaperData[] = PaperStore.listPapers();
     for (let i: number = 0; i < current.length; i++) {
       if (this.isPaperOpen(current[i].id)) {
@@ -216,10 +278,10 @@ struct Index {
       }
     }
     if (!PaperStore.restoreBackup()) {
-      this.statusMessage = '没有可恢复的备份';
+      this.statusMessage = '没有可恢复的有效备份';
       return;
     }
-    this.statusMessage = '已恢复上一份自动备份';
+    this.statusMessage = '已恢复上一份成功保存的自动备份';
     this.refresh();
     setTimeout((): void => {
       const restored: PaperData[] = PaperStore.listPapers();
@@ -229,23 +291,6 @@ struct Index {
         }
       }
     }, 180);
-  }
-
-  private restartVisiblePapers(): void {
-    const snapshot: PaperData[] = PaperStore.listPapers();
-    for (let i: number = 0; i < snapshot.length; i++) {
-      if (snapshot[i].isVisible && this.isPaperOpen(snapshot[i].id)) {
-        this.startPaper(snapshot[i].id, 'close');
-      }
-    }
-    setTimeout((): void => {
-      const next: PaperData[] = PaperStore.listPapers();
-      for (let i: number = 0; i < next.length; i++) {
-        if (next[i].isVisible) {
-          this.startPaper(next[i].id, 'show');
-        }
-      }
-    }, 160);
   }
 
   private paperTitle(paper: PaperData): string {
@@ -277,6 +322,19 @@ struct Index {
     return parts.join(' · ');
   }
 
+  @Builder
+  private SettingButton(label: string, action: () => void) {
+    Button(label)
+      .height(34)
+      .fontSize(11)
+      .fontColor(this.textColor())
+      .backgroundColor(this.cardColor())
+      .border({ width: 1, color: this.cardBorderColor() })
+      .borderRadius(9)
+      .margin({ right: 6, bottom: 6 })
+      .onClick(action)
+  }
+
   build() {
     Column() {
       Row() {
@@ -285,7 +343,7 @@ struct Index {
             .fontSize(30)
             .fontWeight(FontWeight.Medium)
             .fontColor(this.textColor())
-          Text('纸片控制中心 · PC 启动后会自动退到后台')
+          Text('纸片控制中心 · 基础行为已按 3.x 经验收敛')
             .fontSize(12)
             .fontColor(this.mutedColor())
             .margin({ top: 4 })
@@ -319,34 +377,6 @@ struct Index {
           .height(36)
           .fontSize(12)
           .onClick((): void => this.hideAll())
-        Button('主题：' + this.themeLabel())
-          .height(36)
-          .fontSize(12)
-          .fontColor(this.textColor())
-          .backgroundColor(this.cardColor())
-          .border({ width: 1, color: this.cardBorderColor() })
-          .onClick((): void => this.cycleTheme())
-        Button('Markdown：' + this.markdownLabel())
-          .height(36)
-          .fontSize(12)
-          .fontColor(this.textColor())
-          .backgroundColor(this.cardColor())
-          .border({ width: 1, color: this.cardBorderColor() })
-          .onClick((): void => this.cycleMarkdownMode())
-        Button('胶囊：' + (this.useCapsuleMode ? '开启' : '关闭'))
-          .height(36)
-          .fontSize(12)
-          .fontColor(this.textColor())
-          .backgroundColor(this.cardColor())
-          .border({ width: 1, color: this.cardBorderColor() })
-          .onClick((): void => this.toggleCapsule())
-        Button('自动贴边：' + (this.useDeepCapsuleMode ? '开启' : '关闭'))
-          .height(36)
-          .fontSize(12)
-          .fontColor(this.textColor())
-          .backgroundColor(this.cardColor())
-          .border({ width: 1, color: this.cardBorderColor() })
-          .onClick((): void => this.toggleDeepCapsule())
         Blank()
         Button('恢复备份')
           .height(36)
@@ -356,22 +386,37 @@ struct Index {
           .onClick((): void => this.restoreBackup())
       }
       .width('100%')
-      .margin({ top: 18 })
+      .margin({ top: 16 })
+
+      Flex({ wrap: FlexWrap.Wrap }) {
+        this.SettingButton('主题：' + this.themeLabel(), (): void => this.cycleTheme())
+        this.SettingButton('Markdown：' + this.markdownLabel(), (): void => this.cycleMarkdownMode())
+        this.SettingButton('胶囊：' + (this.useCapsuleMode ? '开启' : '关闭'), (): void => this.toggleCapsule())
+        this.SettingButton('自动贴边：' + (this.useDeepCapsuleMode ? '开启' : '关闭'), (): void => this.toggleDeepCapsule())
+        this.SettingButton('待办大小：' + this.todoVisualSizeLabel(), (): void => this.cycleTodoVisualSize())
+        this.SettingButton('完成项置底：' + (this.autoBottomCompleted ? '开启' : '关闭'),
+          (): void => this.toggleAutoBottomCompleted())
+        this.SettingButton('胶囊间距：' + this.capsuleGap.toString(), (): void => this.cycleCapsuleGap())
+      }
+      .width('100%')
+      .margin({ top: 10 })
 
       if (this.statusMessage.length > 0) {
         Text(this.statusMessage)
           .width('100%')
           .fontSize(12)
-          .fontColor(this.mutedColor())
-          .margin({ top: 8 })
+          .fontColor(PaperStore.hasStorageError() ? '#B42318' : this.mutedColor())
+          .margin({ top: 6 })
       }
 
       if (this.papers.length === 0) {
         Column() {
-          Text('桌面上还没有纸片')
+          Text(PaperStore.hasStorageError() ? '数据保护模式' : '桌面上还没有纸片')
             .fontSize(18)
             .fontColor(this.textColor())
-          Text('新建一张待办纸或笔记纸即可开始。')
+          Text(PaperStore.hasStorageError() ?
+            '原数据未被覆盖。请先尝试恢复备份。' :
+            '新建一张待办纸或笔记纸即可开始。')
             .fontSize(13)
             .fontColor(this.mutedColor())
             .margin({ top: 8 })
@@ -449,11 +494,11 @@ struct Index {
         }
         .layoutWeight(1)
         .width('100%')
-        .margin({ top: 16 })
+        .margin({ top: 12 })
         .scrollBar(BarState.Off)
       }
 
-      Text('数据自动保存到 HarmonyOS Preferences，并保留上一份自动备份。')
+      Text('编辑先更新内存；空闲约 1 秒落盘，持续输入最长约 10 秒强制保存，并保留上一份成功状态。')
         .width('100%')
         .fontSize(11)
         .fontColor(this.mutedColor())
