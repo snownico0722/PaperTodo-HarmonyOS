@@ -2,7 +2,6 @@ import { Context } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import {
   AppState,
-  CAPSULE_HEIGHT,
   MARKDOWN_BASIC,
   MARKDOWN_ENHANCED,
   MARKDOWN_OFF,
@@ -23,14 +22,19 @@ const STORE_NAME: string = 'PaperTodoState';
 const STATE_KEY: string = 'state_json';
 const BACKUP_KEY: string = 'state_backup_json';
 
-export class PaperStore {
-  private static store: preferences.Preferences | null = null;
-  private static sequence: number = 0;
+class PaperStoreImpl {
+  private store: preferences.Preferences | null = null;
+  private sequence: number = 0;
 
-  static initialize(context: Context): void {
+  initialize(context: Context): void {
     if (this.store === null) {
-      const options: preferences.Options = { name: STORE_NAME };
-      this.store = preferences.getPreferencesSync(context, options);
+      try {
+        const options: preferences.Options = { name: STORE_NAME };
+        this.store = preferences.getPreferencesSync(context, options);
+      } catch (error) {
+        console.error('PaperTodo preferences init failed: ' + String(error));
+        return;
+      }
     }
 
     let state: AppState = this.loadStateInternal();
@@ -41,15 +45,15 @@ export class PaperStore {
     this.publishSettings(state);
   }
 
-  static loadState(): AppState {
+  loadState(): AppState {
     return this.loadStateInternal();
   }
 
-  static listPapers(): PaperData[] {
+  listPapers(): PaperData[] {
     return this.loadStateInternal().papers;
   }
 
-  static getPaper(id: string): PaperData | null {
+  getPaper(id: string): PaperData | null {
     const state: AppState = this.loadStateInternal();
     for (let i: number = 0; i < state.papers.length; i++) {
       if (state.papers[i].id === id) {
@@ -59,7 +63,7 @@ export class PaperStore {
     return null;
   }
 
-  static createPaper(type: string): PaperData {
+  createPaper(type: string): PaperData {
     const state: AppState = this.loadStateInternal();
     const isNote: boolean = type === PAPER_TYPE_NOTE;
     const now: number = Date.now();
@@ -85,7 +89,7 @@ export class PaperStore {
     return paper;
   }
 
-  static updatePaper(paper: PaperData): void {
+  updatePaper(paper: PaperData): void {
     const state: AppState = this.loadStateInternal();
     paper.updatedAt = Date.now();
     for (let i: number = 0; i < state.papers.length; i++) {
@@ -99,7 +103,7 @@ export class PaperStore {
     this.saveStateInternal(state, true);
   }
 
-  static deletePaper(id: string): void {
+  deletePaper(id: string): void {
     const state: AppState = this.loadStateInternal();
     const next: PaperData[] = [];
     for (let i: number = 0; i < state.papers.length; i++) {
@@ -111,7 +115,7 @@ export class PaperStore {
     this.saveStateInternal(state, true);
   }
 
-  static setPaperVisible(id: string, visible: boolean): void {
+  setPaperVisible(id: string, visible: boolean): void {
     const paper: PaperData | null = this.getPaper(id);
     if (paper === null) {
       return;
@@ -120,7 +124,7 @@ export class PaperStore {
     this.updatePaper(paper);
   }
 
-  static setTheme(theme: string): void {
+  setTheme(theme: string): void {
     const state: AppState = this.loadStateInternal();
     if (theme !== THEME_LIGHT && theme !== THEME_DARK) {
       state.theme = THEME_SYSTEM;
@@ -131,7 +135,7 @@ export class PaperStore {
     this.publishSettings(state);
   }
 
-  static setMarkdownMode(mode: string): void {
+  setMarkdownMode(mode: string): void {
     const state: AppState = this.loadStateInternal();
     if (mode !== MARKDOWN_OFF && mode !== MARKDOWN_BASIC) {
       state.markdownRenderMode = MARKDOWN_ENHANCED;
@@ -142,7 +146,7 @@ export class PaperStore {
     this.publishSettings(state);
   }
 
-  static setCapsuleMode(enabled: boolean): void {
+  setCapsuleMode(enabled: boolean): void {
     const state: AppState = this.loadStateInternal();
     state.useCapsuleMode = enabled;
     if (!enabled) {
@@ -154,14 +158,14 @@ export class PaperStore {
     this.publishSettings(state);
   }
 
-  static setDeepCapsuleMode(enabled: boolean): void {
+  setDeepCapsuleMode(enabled: boolean): void {
     const state: AppState = this.loadStateInternal();
     state.useDeepCapsuleMode = enabled;
     this.saveStateInternal(state, true);
     this.publishSettings(state);
   }
 
-  static getCollapsedIndex(id: string): number {
+  getCollapsedIndex(id: string): number {
     const state: AppState = this.loadStateInternal();
     let collapsedIndex: number = 0;
     for (let i: number = 0; i < state.papers.length; i++) {
@@ -176,11 +180,11 @@ export class PaperStore {
     return collapsedIndex;
   }
 
-  static createTodoItem(text: string, order: number): PaperItem {
+  createTodoItem(text: string, order: number): PaperItem {
     return this.createItem(text, order);
   }
 
-  static restoreBackup(): boolean {
+  restoreBackup(): boolean {
     if (this.store === null) {
       return false;
     }
@@ -193,6 +197,7 @@ export class PaperStore {
       if (state.papers === undefined) {
         return false;
       }
+      this.normalizeState(state);
       this.store.putSync(STATE_KEY, backup);
       this.store.flushSync();
       this.publishSettings(state);
@@ -203,7 +208,7 @@ export class PaperStore {
     }
   }
 
-  private static loadStateInternal(): AppState {
+  private loadStateInternal(): AppState {
     if (this.store === null) {
       return this.createDefaultState();
     }
@@ -235,7 +240,7 @@ export class PaperStore {
     }
   }
 
-  private static saveStateInternal(state: AppState, makeBackup: boolean): void {
+  private saveStateInternal(state: AppState, makeBackup: boolean): void {
     if (this.store === null) {
       return;
     }
@@ -253,7 +258,7 @@ export class PaperStore {
     }
   }
 
-  private static createDefaultState(): AppState {
+  private createDefaultState(): AppState {
     const now: number = Date.now();
     const firstPaper: PaperData = {
       id: this.nextId('paper'),
@@ -280,7 +285,7 @@ export class PaperStore {
     };
   }
 
-  private static normalizeState(state: AppState): void {
+  private normalizeState(state: AppState): void {
     if (state.theme !== THEME_LIGHT && state.theme !== THEME_DARK && state.theme !== THEME_SYSTEM) {
       state.theme = THEME_SYSTEM;
     }
@@ -306,19 +311,19 @@ export class PaperStore {
     }
   }
 
-  private static publishSettings(state: AppState): void {
+  private publishSettings(state: AppState): void {
     AppStorage.setOrCreate<string>('theme', state.theme);
     AppStorage.setOrCreate<string>('markdownRenderMode', state.markdownRenderMode);
     AppStorage.setOrCreate<boolean>('useCapsuleMode', state.useCapsuleMode);
     AppStorage.setOrCreate<boolean>('useDeepCapsuleMode', state.useDeepCapsuleMode);
   }
 
-  private static nextId(prefix: string): string {
+  private nextId(prefix: string): string {
     this.sequence += 1;
     return prefix + '_' + Date.now().toString(36) + '_' + this.sequence.toString(36);
   }
 
-  private static createItem(text: string, order: number): PaperItem {
+  private createItem(text: string, order: number): PaperItem {
     return {
       id: this.nextId('item'),
       text: text,
@@ -327,3 +332,5 @@ export class PaperStore {
     };
   }
 }
+
+export const PaperStore: PaperStoreImpl = new PaperStoreImpl();
