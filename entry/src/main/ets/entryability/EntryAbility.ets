@@ -21,12 +21,6 @@ export default class EntryAbility extends UIAbility {
       ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT);
   }
 
-  onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    this.context.showAbility().catch((error: BusinessError): void => {
-      hilog.warn(DOMAIN, TAG, 'show manager failed: %{public}s', error.message);
-    });
-  }
-
   onWindowStageCreate(windowStage: window.WindowStage): void {
     hilog.info(DOMAIN, TAG, '%{public}s', 'Window stage created');
 
@@ -35,7 +29,9 @@ export default class EntryAbility extends UIAbility {
         hilog.error(DOMAIN, TAG, 'Failed to load content. Cause: %{public}s', JSON.stringify(err));
         return;
       }
-      this.restoreVisiblePapers();
+      this.restoreVisiblePapers().catch((error: BusinessError): void => {
+        hilog.warn(DOMAIN, TAG, 'restore visible papers failed: %{public}s', error.message);
+      });
     });
   }
 
@@ -53,27 +49,36 @@ export default class EntryAbility extends UIAbility {
     }
   }
 
-  private restoreVisiblePapers(): void {
+  private async restoreVisiblePapers(): Promise<void> {
     const papers: PaperData[] = PaperStore.listPapers();
-    let started: number = 0;
+    const starts: Promise<void>[] = [];
     for (let i: number = 0; i < papers.length; i++) {
       if (!papers[i].isVisible) {
         continue;
       }
-      started += 1;
-      this.startPaper(papers[i].id);
+      starts.push(this.startPaper(papers[i].id));
     }
 
-    if (deviceInfo.deviceType === '2in1' && started > 0) {
-      setTimeout((): void => {
-        this.context.hideAbility().catch((error: BusinessError): void => {
-          hilog.warn(DOMAIN, TAG, 'hide manager failed: %{public}s', error.message);
-        });
-      }, 300);
+    if (starts.length === 0) {
+      return;
+    }
+
+    await Promise.all(starts);
+
+    // hideAbility/showAbility require the app to be attached to a system status-bar
+    // item. PaperTodo does not use that launch mode. On 2in1, close only the manager
+    // UIAbility after all paper abilities have started; the specified PaperAbility
+    // instances continue to live independently.
+    if (deviceInfo.deviceType === '2in1') {
+      try {
+        await this.context.terminateSelf();
+      } catch (error) {
+        hilog.warn(DOMAIN, TAG, 'terminate manager failed: %{public}s', String(error));
+      }
     }
   }
 
-  private startPaper(paperId: string): void {
+  private async startPaper(paperId: string): Promise<void> {
     const want: Want = {
       bundleName: 'com.snownico.papertodo',
       moduleName: 'entry',
@@ -82,8 +87,10 @@ export default class EntryAbility extends UIAbility {
         paperId: paperId
       }
     };
-    this.context.startAbility(want).catch((error: BusinessError): void => {
-      hilog.error(DOMAIN, TAG, 'start PaperAbility failed: %{public}s', error.message);
-    });
+    try {
+      await this.context.startAbility(want);
+    } catch (error) {
+      hilog.error(DOMAIN, TAG, 'start PaperAbility failed: %{public}s', String(error));
+    }
   }
 }
