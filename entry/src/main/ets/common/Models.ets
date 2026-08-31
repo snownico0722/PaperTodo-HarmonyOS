@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION: number = 2;
+export const SCHEMA_VERSION: number = 3;
 
 export const PAPER_TYPE_TODO: string = 'todo';
 export const PAPER_TYPE_NOTE: string = 'note';
@@ -19,6 +19,7 @@ export const TODO_VISUAL_XLARGE: string = 'xlarge';
 export const EDGE_SIDE_RIGHT: string = 'right';
 export const DEFAULT_DISPLAY_ID: string = 'default';
 
+// Paper / floating capsule geometry is persisted in vp. Convert to physical px only at Window API boundaries.
 export const PAPER_MIN_WIDTH: number = 220;
 export const PAPER_MIN_HEIGHT: number = 160;
 export const TODO_DEFAULT_WIDTH: number = 280;
@@ -47,11 +48,13 @@ export interface PaperData {
   type: string;
   title: string;
 
+  // Logical geometry in vp.
   expandedX: number;
   expandedY: number;
   expandedWidth: number;
   expandedHeight: number;
 
+  // Floating capsule logical position in vp. Edge-docked X/Y are derived, not persisted truth.
   capsuleX: number;
   capsuleY: number;
   edgeSide: string;
@@ -66,7 +69,7 @@ export interface PaperData {
   createdAt: number;
   updatedAt: number;
 
-  // v1 迁移字段。新代码不再写入这些值。
+  // v1 migration fields. New code never writes these values.
   x?: number;
   y?: number;
   width?: number;
