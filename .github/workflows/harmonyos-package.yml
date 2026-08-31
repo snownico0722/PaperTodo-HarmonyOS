@@ -69,18 +69,22 @@ jobs:
             process.exit(2);
           }
 
-          for (const key of ['project_id', 'key_id', 'private_key', 'sub_account']) {
+          for (const key of ['key_id', 'private_key', 'sub_account']) {
             if (!account[key]) {
               console.error(`AGC Service Account JSON is missing ${key}.`);
               process.exit(2);
             }
           }
 
-          if (String(account.project_id) !== EXPECTED_PROJECT_ID) {
-            console.error('AGC Service Account belongs to a different project than PaperTodo.');
+          const projectId = account.project_id === undefined || account.project_id === null ? '' : String(account.project_id);
+          if (projectId.length === 0) {
+            console.error('AGC developer-level Service Account detected.');
+          } else if (projectId === EXPECTED_PROJECT_ID) {
+            console.error('AGC project-level Service Account is bound to PaperTodo.');
+          } else {
+            console.error('AGC project-level Service Account belongs to a different project than PaperTodo.');
             process.exit(2);
           }
-          console.error('AGC Service Account project binding matches PaperTodo.');
 
           const now = Math.floor(Date.now() / 1000);
           const header = { kid: account.key_id, typ: 'JWT', alg: 'PS256' };
