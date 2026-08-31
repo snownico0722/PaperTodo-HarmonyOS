@@ -1,5 +1,6 @@
 {
   "src": [
+    "pages/Host",
     "pages/Index",
     "pages/Paper",
     "pages/PaperDesktop",
