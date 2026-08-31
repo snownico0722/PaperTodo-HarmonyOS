@@ -65,7 +65,7 @@ struct Paper {
   @StorageLink('theme') theme: string = THEME_SYSTEM;
   @StorageLink('markdownRenderMode') @Watch('onMarkdownModeChanged') markdownRenderMode: string = MARKDOWN_ENHANCED;
   @StorageLink('useCapsuleMode') useCapsuleMode: boolean = true;
-  @StorageLink('useDeepCapsuleMode') useDeepCapsuleMode: boolean = true;
+  @StorageLink('useDeepCapsuleMode') @Watch('onDeepCapsuleModeChanged') useDeepCapsuleMode: boolean = true;
   @StorageLink('todoVisualSize') todoVisualSize: string = TODO_VISUAL_MEDIUM;
   @StorageLink('autoBottomCompleted') autoBottomCompleted: boolean = false;
   @StorageLink('capsuleGap') capsuleGap: number = 4;
@@ -147,6 +147,21 @@ struct Paper {
 
   private onMarkdownModeChanged(): void {
     this.refreshMarkdown();
+  }
+
+  private onDeepCapsuleModeChanged(): void {
+    if (!this.isCollapsed || this.paper === null || this.capsuleDragging) {
+      return;
+    }
+    if (!this.useDeepCapsuleMode) {
+      const geometry: DisplayGeometry = this.displayGeometry();
+      const metrics: CapsuleMetrics = this.capsuleMetrics();
+      const index: number = PaperStore.getCollapsedIndex(this.paperId);
+      this.paper.capsuleX = pxToVp(edgeCapsuleFullX(metrics), geometry.density);
+      this.paper.capsuleY = pxToVp(edgeCapsuleY(index, metrics), geometry.density);
+      PaperStore.updatePaper(this.paper, false);
+    }
+    this.syncCollapsedWindow(this.capsuleHovered);
   }
 
   private savePaper(immediate: boolean = false): void {
@@ -380,6 +395,10 @@ struct Paper {
     this.isCollapsed = collapsed;
     this.paper.isCollapsed = collapsed;
     this.savePaper(true);
+    // Visibility does not change here, but setPaperVisible is the store-owned path that
+    // broadcasts a layout revision. Edge queues must repack whenever one paper enters
+    // or leaves the collapsed set.
+    PaperStore.setPaperVisible(this.paperId, this.paper.isVisible);
     if (collapsed) {
       this.syncCollapsedWindow(false);
     } else {
