@@ -73,7 +73,13 @@ jobs:
           set -euo pipefail
 
           BUILD_MODE="debug"
-          VERSION="sha-${GITHUB_SHA:0:7}"
+          SOURCE_SHA="$GITHUB_SHA"
+
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            SOURCE_SHA="${{ github.event.pull_request.head.sha }}"
+          fi
+
+          VERSION="sha-${SOURCE_SHA:0:7}"
 
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             BUILD_MODE="${{ inputs.build_mode }}"
@@ -102,17 +108,23 @@ jobs:
           set -euo pipefail
           mkdir -p package/payload
 
-          mapfile -t OUTPUTS < <(
-            find . -type f \
-              \( -name '*.app' -o -name '*.hap' \) \
-              -path '*/build/*/outputs/*' \
-              -print | sort
+          mapfile -t APPS < <(
+            find . -type f -name '*.app' -path '*/build/*' -print | sort
+          )
+          mapfile -t HAPS < <(
+            find . -type f -name '*-unsigned.hap' -path '*/build/*' -print | sort
           )
 
-          if [[ ${#OUTPUTS[@]} -eq 0 ]]; then
-            echo 'No .app or .hap output was produced.' >&2
+          if [[ ${#APPS[@]} -eq 0 ]]; then
+            echo 'assembleApp succeeded, but no .app package was found.' >&2
+            echo 'Build outputs:' >&2
+            find . -type f -path '*/build/*' \
+              \( -name '*.app' -o -name '*.hap' \) \
+              -print >&2
             exit 1
           fi
+
+          OUTPUTS=("${APPS[@]}" "${HAPS[@]}")
 
           printf 'Collected outputs:\n'
           printf '  %s\n' "${OUTPUTS[@]}"
@@ -138,5 +150,5 @@ jobs:
           path: |
             package/${{ env.PACKAGE_BASENAME }}.zip
             package/payload/*.app
-            package/payload/*.hap
+            package/payload/*-unsigned.hap
             package/payload/SHA256SUMS
