@@ -17,7 +17,8 @@ import {
   STATUS_EVENT_NEW_NOTE,
   STATUS_EVENT_NEW_TODO,
   STATUS_EVENT_OPEN_MANAGER,
-  STATUS_EVENT_SHOW_ALL
+  STATUS_EVENT_SHOW_ALL,
+  STATUS_EVENT_TOGGLE_PAPER
 } from '../common/StatusBarEvents';
 
 const DOMAIN: number = 0x0000;
@@ -129,7 +130,7 @@ export default class EntryAbility extends UIAbility {
       const quickOperation: statusBarManager.QuickOperation = {
         abilityName: 'PaperStatusBarAbility',
         title: 'PaperTodo',
-        height: 176,
+        height: 360,
         moduleName: 'entry'
       };
       const item: statusBarManager.StatusBarItem = {
@@ -151,12 +152,23 @@ export default class EntryAbility extends UIAbility {
     const showAll: emitter.InnerEvent = { eventId: STATUS_EVENT_SHOW_ALL };
     const hideAll: emitter.InnerEvent = { eventId: STATUS_EVENT_HIDE_ALL };
     const openManager: emitter.InnerEvent = { eventId: STATUS_EVENT_OPEN_MANAGER };
+    const togglePaper: emitter.InnerEvent = { eventId: STATUS_EVENT_TOGGLE_PAPER };
 
     emitter.on(newTodo, (): void => this.createPaper(PAPER_TYPE_TODO));
     emitter.on(newNote, (): void => this.createPaper(PAPER_TYPE_NOTE));
     emitter.on(showAll, (): void => this.showAllPapers());
     emitter.on(hideAll, (): void => this.hideAllPapers());
     emitter.on(openManager, (): void => this.openManager());
+    emitter.on(togglePaper, (eventData: emitter.EventData): void => {
+      if (eventData.data === undefined) {
+        return;
+      }
+      const rawId: Object | undefined = eventData.data.paperId;
+      if (rawId === undefined || rawId === null) {
+        return;
+      }
+      this.togglePaper(String(rawId));
+    });
   }
 
   private createPaper(type: string): void {
@@ -166,6 +178,22 @@ export default class EntryAbility extends UIAbility {
         hilog.warn(DOMAIN, TAG, 'status-bar create paper failed: %{public}s', error.message);
       });
     }
+  }
+
+  private togglePaper(paperId: string): void {
+    const paper: PaperData | null = PaperStore.getPaper(paperId);
+    if (paper === null) {
+      return;
+    }
+    if (paper.isVisible) {
+      PaperStore.setPaperVisible(paper.id, false);
+      this.sendPaperCommand(paper.id, 'hide');
+      return;
+    }
+    PaperStore.setPaperVisible(paper.id, true);
+    this.startPaper(paper.id).catch((error: Error): void => {
+      hilog.warn(DOMAIN, TAG, 'status-bar show paper failed: %{public}s', error.message);
+    });
   }
 
   private showAllPapers(): void {
@@ -182,19 +210,23 @@ export default class EntryAbility extends UIAbility {
     const papers: PaperData[] = PaperStore.listPapers();
     for (let i: number = 0; i < papers.length; i++) {
       PaperStore.setPaperVisible(papers[i].id, false);
-      const want: Want = {
-        bundleName: 'com.papertodo.app',
-        moduleName: 'entry',
-        abilityName: 'PaperAbility',
-        parameters: {
-          paperId: papers[i].id,
-          paperCommand: 'hide'
-        }
-      };
-      this.context.startAbility(want).catch((error: BusinessError): void => {
-        hilog.warn(DOMAIN, TAG, 'hide paper command failed: %{public}s', error.message);
-      });
+      this.sendPaperCommand(papers[i].id, 'hide');
     }
+  }
+
+  private sendPaperCommand(paperId: string, command: string): void {
+    const want: Want = {
+      bundleName: 'com.papertodo.app',
+      moduleName: 'entry',
+      abilityName: 'PaperAbility',
+      parameters: {
+        paperId: paperId,
+        paperCommand: command
+      }
+    };
+    this.context.startAbility(want).catch((error: BusinessError): void => {
+      hilog.warn(DOMAIN, TAG, 'paper command failed: %{public}s', error.message);
+    });
   }
 
   private async restoreVisiblePapers(): Promise<void> {
