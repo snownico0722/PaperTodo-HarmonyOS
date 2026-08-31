@@ -192,6 +192,9 @@ class PaperStoreImpl {
     paper.updatedAt = Date.now();
     papers[foundIndex] = paper;
     this.requestSave(immediate);
+    if (immediate) {
+      this.notifyRevision();
+    }
   }
 
   deletePaper(id: string): void {
@@ -221,7 +224,6 @@ class PaperStoreImpl {
     }
     paper.isVisible = visible;
     this.updatePaper(paper, true);
-    this.notifyRevision();
   }
 
   notifyLayoutChanged(): void {
