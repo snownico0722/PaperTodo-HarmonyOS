@@ -34,6 +34,7 @@ jobs:
         with:
           path: command-line-tools
           key: ${{ runner.os }}-harmonyos-cli-6.1.0.816
+          save-always: true
 
       - name: Download HarmonyOS Command Line Tools
         if: steps.cache-tools.outputs.cache-hit != 'true'
