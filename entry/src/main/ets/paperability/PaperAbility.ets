@@ -7,8 +7,15 @@ import {
 } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { window } from '@kit.ArkUI';
-import { CAPSULE_HEIGHT, CAPSULE_WIDTH, PaperData } from '../common/Models';
+import { display, window } from '@kit.ArkUI';
+import {
+  CAPSULE_HEIGHT,
+  CAPSULE_WIDTH,
+  PAPER_MIN_HEIGHT,
+  PAPER_MIN_WIDTH,
+  AppState,
+  PaperData
+} from '../common/Models';
 import { PaperStore } from '../common/PaperStore';
 
 const DOMAIN: number = 0x0000;
@@ -40,15 +47,18 @@ export default class PaperAbility extends UIAbility {
     const command: string = this.readCommand(want);
     if (command === 'hide') {
       PaperStore.setPaperVisible(this.paperId, false);
+      PaperStore.flushNow();
       this.context.terminateSelf();
       return;
     }
     if (command === 'delete') {
       PaperStore.deletePaper(this.paperId);
+      PaperStore.flushNow();
       this.context.terminateSelf();
       return;
     }
     if (command === 'close') {
+      PaperStore.flushNow();
       this.context.terminateSelf();
       return;
     }
@@ -69,7 +79,12 @@ export default class PaperAbility extends UIAbility {
     });
   }
 
+  onBackground(): void {
+    PaperStore.flushNow();
+  }
+
   onDestroy(): void {
+    PaperStore.flushNow();
     if (this.paperId.length > 0) {
       AppStorage.setOrCreate<boolean>('paperOpen:' + this.paperId, false);
     }
@@ -93,10 +108,38 @@ export default class PaperAbility extends UIAbility {
       AppStorage.setOrCreate<window.Window>('paperWindow:' + this.paperId, mainWindow);
       AppStorage.setOrCreate<boolean>('paperOpen:' + this.paperId, true);
 
-      const width: number = paper.isCollapsed ? CAPSULE_WIDTH : paper.width;
-      const height: number = paper.isCollapsed ? CAPSULE_HEIGHT : paper.height;
+      const screen: display.Display = display.getDefaultDisplaySync();
+      const state: AppState = PaperStore.loadState();
+      paper.expandedWidth = Math.min(screen.width, Math.max(PAPER_MIN_WIDTH, paper.expandedWidth));
+      paper.expandedHeight = Math.min(screen.height, Math.max(PAPER_MIN_HEIGHT, paper.expandedHeight));
+      paper.expandedX = this.clamp(paper.expandedX, 0, Math.max(0, screen.width - paper.expandedWidth));
+      paper.expandedY = this.clamp(paper.expandedY, 0, Math.max(0, screen.height - paper.expandedHeight));
+
+      let width: number = paper.expandedWidth;
+      let height: number = paper.expandedHeight;
+      let x: number = paper.expandedX;
+      let y: number = paper.expandedY;
+
+      if (paper.isCollapsed && state.useCapsuleMode) {
+        width = CAPSULE_WIDTH;
+        height = CAPSULE_HEIGHT;
+        if (state.useDeepCapsuleMode) {
+          const index: number = PaperStore.getCollapsedIndex(paper.id);
+          paper.capsuleX = Math.max(0, screen.width - CAPSULE_WIDTH);
+          paper.capsuleY = 20 + index * (CAPSULE_HEIGHT + state.capsuleGap);
+          x = paper.capsuleX + Math.round(CAPSULE_WIDTH * 0.45);
+          y = paper.capsuleY;
+        } else {
+          paper.capsuleX = this.clamp(paper.capsuleX, 0, Math.max(0, screen.width - CAPSULE_WIDTH));
+          paper.capsuleY = this.clamp(paper.capsuleY, 0, Math.max(0, screen.height - CAPSULE_HEIGHT));
+          x = paper.capsuleX;
+          y = paper.capsuleY;
+        }
+      }
+
+      PaperStore.updatePaper(paper, false);
       mainWindow.resize(Math.round(width), Math.round(height));
-      mainWindow.moveWindowTo(Math.round(paper.x), Math.round(paper.y));
+      mainWindow.moveWindowTo(Math.round(x), Math.round(y));
       mainWindow.setWindowDecorVisible(false);
       mainWindow.setWindowTitleButtonVisible(false, false, false);
       mainWindow.setWindowTopmost(paper.alwaysOnTop).catch((error: BusinessError): void => {
@@ -105,6 +148,10 @@ export default class PaperAbility extends UIAbility {
     } catch (error) {
       hilog.error(DOMAIN, TAG, 'configure window failed: %{public}s', String(error));
     }
+  }
+
+  private clamp(value: number, minValue: number, maxValue: number): number {
+    return Math.max(minValue, Math.min(value, maxValue));
   }
 
   private readPaperId(want: Want): string {
