@@ -58,10 +58,13 @@ export default class EntryAbility extends UIAbility {
         hilog.error(DOMAIN, TAG, 'Failed to load host page. Cause: %{public}s', JSON.stringify(err));
         return;
       }
-      this.configureHostWindow().then((): void => this.bootstrapDesktop())
-        .catch((error: Error): void => {
+      this.configureHostWindow().then((): void => {
+        this.bootstrapDesktop().catch((error: Error): void => {
           hilog.warn(DOMAIN, TAG, 'desktop bootstrap failed: %{public}s', error.message);
         });
+      }).catch((error: Error): void => {
+        hilog.warn(DOMAIN, TAG, 'configure host failed: %{public}s', error.message);
+      });
     });
   }
 
