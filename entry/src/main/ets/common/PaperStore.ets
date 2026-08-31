@@ -168,6 +168,7 @@ class PaperStoreImpl {
     };
     state.papers.push(paper);
     this.requestSave(true);
+    this.notifyRevision();
     return paper;
   }
 
@@ -203,15 +204,19 @@ class PaperStoreImpl {
     }
     const state: AppState = this.ensureState();
     const next: PaperData[] = [];
+    let removed: boolean = false;
     for (let i: number = 0; i < state.papers.length; i++) {
-      if (state.papers[i].id !== id) {
+      if (state.papers[i].id === id) {
+        removed = true;
+      } else {
         next.push(state.papers[i]);
       }
     }
-    if (next.length === state.papers.length) {
+    if (!removed) {
       return;
     }
     state.papers = next;
+    this.clearLinkedNoteReferences(state, id);
     this.normalizeEdgeOrders(state);
     this.requestSave(true);
     this.notifyRevision();
@@ -277,6 +282,27 @@ class PaperStoreImpl {
   setAutoBottomCompleted(enabled: boolean): void {
     const state: AppState = this.ensureState();
     state.autoBottomCompleted = enabled;
+    this.requestSave(true);
+    this.publishSettings();
+  }
+
+  setAutoClearCompletedTodos(enabled: boolean): void {
+    const state: AppState = this.ensureState();
+    state.autoClearCompletedTodos = enabled;
+    this.requestSave(true);
+    this.publishSettings();
+  }
+
+  setEnableTodoNoteLinks(enabled: boolean): void {
+    const state: AppState = this.ensureState();
+    state.enableTodoNoteLinks = enabled;
+    this.requestSave(true);
+    this.publishSettings();
+  }
+
+  setShowLinkedNoteName(enabled: boolean): void {
+    const state: AppState = this.ensureState();
+    state.showLinkedNoteName = enabled;
     this.requestSave(true);
     this.publishSettings();
   }
@@ -611,6 +637,15 @@ class PaperStoreImpl {
     if (state.autoBottomCompleted === undefined) {
       state.autoBottomCompleted = false;
     }
+    if (state.autoClearCompletedTodos === undefined) {
+      state.autoClearCompletedTodos = false;
+    }
+    if (state.enableTodoNoteLinks === undefined) {
+      state.enableTodoNoteLinks = true;
+    }
+    if (state.showLinkedNoteName === undefined) {
+      state.showLinkedNoteName = false;
+    }
     if (state.capsuleGap !== 0 && state.capsuleGap !== 8) {
       state.capsuleGap = CAPSULE_GAP_DEFAULT;
     }
@@ -630,6 +665,7 @@ class PaperStoreImpl {
       }
       usedPaperIds.push(paper.id);
     }
+    this.normalizeTodoLinks(state);
     this.normalizeEdgeOrders(state);
   }
 
@@ -699,6 +735,9 @@ class PaperStoreImpl {
       item.text = item.text.slice(0, TODO_ITEM_MAX_LENGTH);
       item.done = item.done === true;
       item.order = i;
+      if (typeof item.linkedNoteId !== 'string' || item.linkedNoteId.length === 0) {
+        item.linkedNoteId = undefined;
+      }
     }
     if (typeof paper.content !== 'string') {
       paper.content = '';
@@ -709,6 +748,43 @@ class PaperStoreImpl {
     }
     if (!Number.isFinite(paper.updatedAt)) {
       paper.updatedAt = paper.createdAt;
+    }
+  }
+
+  private normalizeTodoLinks(state: AppState): void {
+    const noteIds: string[] = [];
+    for (let i: number = 0; i < state.papers.length; i++) {
+      if (state.papers[i].type === PAPER_TYPE_NOTE) {
+        noteIds.push(state.papers[i].id);
+      }
+    }
+    for (let i: number = 0; i < state.papers.length; i++) {
+      const paper: PaperData = state.papers[i];
+      if (paper.type !== PAPER_TYPE_TODO) {
+        continue;
+      }
+      for (let j: number = 0; j < paper.items.length; j++) {
+        const linkedId: string | undefined = paper.items[j].linkedNoteId;
+        if (linkedId !== undefined && this.stringIndexOf(noteIds, linkedId) < 0) {
+          paper.items[j].linkedNoteId = undefined;
+        }
+      }
+    }
+  }
+
+  private clearLinkedNoteReferences(state: AppState, deletedId: string): void {
+    for (let i: number = 0; i < state.papers.length; i++) {
+      const paper: PaperData = state.papers[i];
+      let changed: boolean = false;
+      for (let j: number = 0; j < paper.items.length; j++) {
+        if (paper.items[j].linkedNoteId === deletedId) {
+          paper.items[j].linkedNoteId = undefined;
+          changed = true;
+        }
+      }
+      if (changed) {
+        paper.updatedAt = Date.now();
+      }
     }
   }
 
@@ -811,6 +887,9 @@ class PaperStoreImpl {
       useDeepCapsuleMode: true,
       todoVisualSize: TODO_VISUAL_MEDIUM,
       autoBottomCompleted: false,
+      autoClearCompletedTodos: false,
+      enableTodoNoteLinks: true,
+      showLinkedNoteName: false,
       capsuleGap: CAPSULE_GAP_DEFAULT
     };
   }
@@ -826,6 +905,9 @@ class PaperStoreImpl {
       useDeepCapsuleMode: true,
       todoVisualSize: TODO_VISUAL_MEDIUM,
       autoBottomCompleted: false,
+      autoClearCompletedTodos: false,
+      enableTodoNoteLinks: true,
+      showLinkedNoteName: false,
       capsuleGap: CAPSULE_GAP_DEFAULT
     };
   }
@@ -845,6 +927,9 @@ class PaperStoreImpl {
     AppStorage.setOrCreate<boolean>('useDeepCapsuleMode', state.useDeepCapsuleMode);
     AppStorage.setOrCreate<string>('todoVisualSize', state.todoVisualSize);
     AppStorage.setOrCreate<boolean>('autoBottomCompleted', state.autoBottomCompleted);
+    AppStorage.setOrCreate<boolean>('autoClearCompletedTodos', state.autoClearCompletedTodos);
+    AppStorage.setOrCreate<boolean>('enableTodoNoteLinks', state.enableTodoNoteLinks);
+    AppStorage.setOrCreate<boolean>('showLinkedNoteName', state.showLinkedNoteName);
     AppStorage.setOrCreate<number>('capsuleGap', state.capsuleGap);
     this.notifyRevision();
   }
