@@ -25,7 +25,9 @@ export class CapsuleMotion {
     this.currentX = Math.round(x);
     this.currentY = Math.round(y);
     this.initialized = true;
-    this.tryMove(win);
+    if (!this.tryMove(win)) {
+      this.initialized = false;
+    }
   }
 
   animateX(win: window.Window, targetX: number, y: number, durationMs: number): void {
@@ -52,12 +54,15 @@ export class CapsuleMotion {
       const eased: number = 1 - inverse * inverse * inverse;
       this.currentX = Math.round(startX + (target - startX) * eased);
       if (!this.tryMove(win)) {
+        this.initialized = false;
         return;
       }
       if (progress >= 1) {
         this.stop();
         this.currentX = target;
-        this.tryMove(win);
+        if (!this.tryMove(win)) {
+          this.initialized = false;
+        }
       }
     }, FRAME_MS);
   }
