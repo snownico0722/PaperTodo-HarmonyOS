@@ -46,6 +46,7 @@ import { PaperStore } from '../common/PaperStore';
 const CAPSULE_REVEAL_MS: number = 110;
 const CAPSULE_HIDE_MS: number = 130;
 const CAPSULE_DRAG_THRESHOLD: number = 4;
+const CAPSULE_CLICK_SUPPRESS_MS: number = 250;
 
 @Entry({ useSharedStorage: true })
 @Component
@@ -87,6 +88,7 @@ struct Paper {
   private capsuleHovered: boolean = false;
   private capsuleDragging: boolean = false;
   private capsuleMovedDuringDrag: boolean = false;
+  private suppressCapsuleClickUntil: number = 0;
 
   aboutToAppear(): void {
     this.reloadPaper();
@@ -350,6 +352,7 @@ struct Paper {
     this.capsuleHovered = false;
     this.capsuleDragging = false;
     this.capsuleMovedDuringDrag = false;
+    this.suppressCapsuleClickUntil = 0;
     this.capsuleMotion.stop();
     this.isCollapsed = collapsed;
     this.paper.isCollapsed = collapsed;
@@ -416,8 +419,7 @@ struct Paper {
   }
 
   private activateCapsule(): void {
-    if (this.capsuleMovedDuringDrag) {
-      this.capsuleMovedDuringDrag = false;
+    if (Date.now() < this.suppressCapsuleClickUntil) {
       return;
     }
     this.setCollapsed(false);
@@ -503,6 +505,11 @@ struct Paper {
     if (this.paper === null) {
       return;
     }
+    if (this.isCollapsed && this.capsuleMovedDuringDrag) {
+      this.suppressCapsuleClickUntil = Date.now() + CAPSULE_CLICK_SUPPRESS_MS;
+    }
+    this.capsuleMovedDuringDrag = false;
+
     if (this.isCollapsed) {
       if (this.useDeepCapsuleMode) {
         const metrics: CapsuleMetrics = this.capsuleMetrics();
