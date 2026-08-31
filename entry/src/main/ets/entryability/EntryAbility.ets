@@ -29,7 +29,7 @@ export default class EntryAbility extends UIAbility {
         hilog.error(DOMAIN, TAG, 'Failed to load content. Cause: %{public}s', JSON.stringify(err));
         return;
       }
-      this.restoreVisiblePapers().catch((error: BusinessError): void => {
+      this.restoreVisiblePapers().catch((error: Error): void => {
         hilog.warn(DOMAIN, TAG, 'restore visible papers failed: %{public}s', error.message);
       });
     });
@@ -51,7 +51,7 @@ export default class EntryAbility extends UIAbility {
 
   private async restoreVisiblePapers(): Promise<void> {
     const papers: PaperData[] = PaperStore.listPapers();
-    const starts: Promise<void>[] = [];
+    const starts: Promise<boolean>[] = [];
     for (let i: number = 0; i < papers.length; i++) {
       if (!papers[i].isVisible) {
         continue;
@@ -63,13 +63,18 @@ export default class EntryAbility extends UIAbility {
       return;
     }
 
-    await Promise.all(starts);
+    const results: boolean[] = await Promise.all(starts);
+    let succeeded: number = 0;
+    for (let i: number = 0; i < results.length; i++) {
+      if (results[i]) {
+        succeeded += 1;
+      }
+    }
 
     // hideAbility/showAbility require the app to be attached to a system status-bar
     // item. PaperTodo does not use that launch mode. On 2in1, close only the manager
-    // UIAbility after all paper abilities have started; the specified PaperAbility
-    // instances continue to live independently.
-    if (deviceInfo.deviceType === '2in1') {
+    // UIAbility after at least one independent paper was started successfully.
+    if (deviceInfo.deviceType === '2in1' && succeeded > 0) {
       try {
         await this.context.terminateSelf();
       } catch (error) {
@@ -78,7 +83,7 @@ export default class EntryAbility extends UIAbility {
     }
   }
 
-  private async startPaper(paperId: string): Promise<void> {
+  private async startPaper(paperId: string): Promise<boolean> {
     const want: Want = {
       bundleName: 'com.snownico.papertodo',
       moduleName: 'entry',
@@ -89,8 +94,10 @@ export default class EntryAbility extends UIAbility {
     };
     try {
       await this.context.startAbility(want);
+      return true;
     } catch (error) {
       hilog.error(DOMAIN, TAG, 'start PaperAbility failed: %{public}s', String(error));
+      return false;
     }
   }
 }
