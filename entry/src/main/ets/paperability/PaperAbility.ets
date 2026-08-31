@@ -14,6 +14,10 @@ import { PaperStore } from '../common/PaperStore';
 const DOMAIN: number = 0x0000;
 const TAG: string = 'PaperAbility';
 
+interface PaperLocalStorageData {
+  paperId: string;
+}
+
 export default class PaperAbility extends UIAbility {
   private paperId: string = '';
   private storage: LocalStorage = new LocalStorage();
@@ -21,7 +25,8 @@ export default class PaperAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     PaperStore.initialize(this.context);
     this.paperId = this.readPaperId(want);
-    this.storage = new LocalStorage({ paperId: this.paperId });
+    const storageData: PaperLocalStorageData = { paperId: this.paperId };
+    this.storage = new LocalStorage(storageData);
     AppStorage.setOrCreate<number>('systemColorMode', this.context.config.colorMode ??
       ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT);
   }
