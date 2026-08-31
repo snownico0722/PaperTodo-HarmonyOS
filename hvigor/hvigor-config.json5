@@ -1,0 +1,11 @@
+{
+  "modelVersion": "6.1.0",
+  "dependencies": {},
+  "properties": {
+    "enableSignTask": false
+  },
+  "execution": {},
+  "logging": {},
+  "debugging": {},
+  "nodeOptions": {}
+}

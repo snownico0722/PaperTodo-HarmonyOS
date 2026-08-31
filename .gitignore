@@ -1,0 +1,22 @@
+# DevEco Studio / HarmonyOS
+.idea/
+.hvigor/
+oh_modules/
+node_modules/
+local.properties
+
+# Build outputs
+build/
+**/build/
+
+# Signing material
+*.p12
+*.p7b
+*.cer
+*.pem
+*.key
+
+# OS / editors
+.DS_Store
+Thumbs.db
+*.log
