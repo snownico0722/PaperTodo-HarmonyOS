@@ -1,3 +1,4 @@
+import { BusinessError } from '@kit.BasicServicesKit';
 import { window } from '@kit.ArkUI';
 
 const FRAME_MS: number = 16;
@@ -69,10 +70,15 @@ export class CapsuleMotion {
 
   private tryMove(win: window.Window): boolean {
     try {
-      win.moveWindowTo(this.currentX, this.currentY);
+      win.moveWindowTo(this.currentX, this.currentY).catch((error: BusinessError): void => {
+        console.error('capsule window move failed: ' + error.message);
+        this.initialized = false;
+        this.stop();
+      });
       return true;
     } catch (error) {
-      console.error('capsule window move failed: ' + String(error));
+      console.error('capsule window move threw: ' + String(error));
+      this.initialized = false;
       this.stop();
       return false;
     }
