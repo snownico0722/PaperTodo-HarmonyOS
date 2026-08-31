@@ -33,7 +33,7 @@ export const CAPSULE_GAP_DEFAULT: number = 4;
 export const MAX_PAPERS: number = 100;
 export const TITLE_MAX_LENGTH: number = 20;
 export const TODO_PASTE_MAX_ITEMS: number = 200;
-export const TODO_ITEM_MAX_LENGTH: number = 2000;
+export const TODO_ITEM_MAX_LENGTH: number = 5000;
 export const TODO_HISTORY_LIMIT: number = 100;
 export const NOTE_MAX_LENGTH: number = 200000;
 
