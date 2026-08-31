@@ -1,5 +1,6 @@
 import {
   AbilityConstant,
+  bundleManager,
   Configuration,
   ConfigurationConstant,
   UIAbility,
@@ -172,16 +173,35 @@ export default class PaperAbility extends UIAbility {
       return;
     }
 
+    // supportWindowMode in module.json5 only declares capability. On PC/2in1 the
+    // actual main window can still start in a system-managed mode. Force this
+    // PaperAbility to the floating mode before stripping its system decoration.
+    try {
+      await windowStage.setSupportedWindowModes([bundleManager.SupportWindowMode.FLOATING]);
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'setSupportedWindowModes failed: %{public}s', String(error));
+    }
+
     const mainWindow: window.Window = windowStage.getMainWindowSync();
     this.mainWindow = mainWindow;
     AppStorage.setOrCreate<window.Window>('paperWindow:' + this.paperId, mainWindow);
     AppStorage.setOrCreate<boolean>('paperOpen:' + this.paperId, true);
 
     try {
+      await mainWindow.recover();
+    } catch (error) {
+      // recover can reject when the window is already floating. Decoration and
+      // geometry still need to be applied below.
+      hilog.warn(DOMAIN, TAG, 'recover floating window skipped/failed: %{public}s', String(error));
+    }
+
+    try {
       mainWindow.setWindowDecorVisible(false);
       mainWindow.setWindowTitleButtonVisible(false, false, false);
+      mainWindow.setWindowDecorHeight(0);
+      mainWindow.setWindowBackgroundColor('#00000000');
     } catch (error) {
-      hilog.warn(DOMAIN, TAG, 'configure decor failed: %{public}s', String(error));
+      hilog.warn(DOMAIN, TAG, 'configure frameless paper failed: %{public}s', String(error));
     }
 
     await this.applyStoredGeometry(mainWindow);
