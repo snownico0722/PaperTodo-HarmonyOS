@@ -39,6 +39,14 @@ export default class EntryAbility extends UIAbility {
     });
   }
 
+  onBackground(): void {
+    PaperStore.flushNow();
+  }
+
+  onDestroy(): void {
+    PaperStore.flushNow();
+  }
+
   onConfigurationUpdate(config: Configuration): void {
     if (config.colorMode !== undefined) {
       AppStorage.setOrCreate<number>('systemColorMode', config.colorMode);
