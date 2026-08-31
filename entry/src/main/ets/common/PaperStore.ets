@@ -42,6 +42,7 @@ interface LoadResult {
   persistedJson: string;
   shouldPersist: boolean;
   blocked: boolean;
+  preserveBackup: boolean;
 }
 
 class PaperStoreImpl {
@@ -49,6 +50,7 @@ class PaperStoreImpl {
   private state: AppState | null = null;
   private persistedJson: string = '';
   private storageBlocked: boolean = false;
+  private preserveBackupOnNextFlush: boolean = false;
   private dirty: boolean = false;
   private sequence: number = 0;
   private debounceTimer: number = -1;
@@ -57,14 +59,27 @@ class PaperStoreImpl {
   private revision: number = 0;
 
   initialize(context: Context): void {
+    let acquiredStoreNow: boolean = false;
     if (this.store === null) {
       try {
         const options: preferences.Options = { name: STORE_NAME };
         this.store = preferences.getPreferencesSync(context, options);
+        acquiredStoreNow = true;
       } catch (error) {
         console.error('PaperTodo preferences init failed: ' + String(error));
         this.storageBlocked = true;
       }
+    }
+
+    // A previous Preferences acquisition may have failed temporarily. Once a later
+    // UIAbility acquires the store successfully, reload instead of keeping the safe
+    // in-memory empty state for the rest of the process lifetime.
+    if (acquiredStoreNow && this.storageBlocked && this.state !== null && !this.state.initialized) {
+      this.state = null;
+      this.persistedJson = '';
+      this.storageBlocked = false;
+      this.preserveBackupOnNextFlush = false;
+      this.clearSaveTimers();
     }
 
     if (this.state === null) {
@@ -72,6 +87,7 @@ class PaperStoreImpl {
       this.state = loaded.state;
       this.persistedJson = loaded.persistedJson;
       this.storageBlocked = this.storageBlocked || loaded.blocked;
+      this.preserveBackupOnNextFlush = loaded.preserveBackup;
       if (loaded.shouldPersist && !this.storageBlocked) {
         this.dirty = true;
         this.flushNow();
@@ -117,7 +133,6 @@ class PaperStoreImpl {
     const offset: number = (state.papers.length % 8) * 28;
     const startX: number = source !== null ? source.expandedX + 32 : 120 + offset;
     const startY: number = source !== null ? source.expandedY + 32 : 120 + offset;
-    const edgeOrder: number = this.nextEdgeOrder(state);
     const paper: PaperData = {
       id: this.nextId('paper'),
       type: isNote ? PAPER_TYPE_NOTE : PAPER_TYPE_TODO,
@@ -129,7 +144,7 @@ class PaperStoreImpl {
       capsuleX: startX,
       capsuleY: startY,
       edgeSide: EDGE_SIDE_RIGHT,
-      edgeOrder: edgeOrder,
+      edgeOrder: this.nextEdgeOrder(state),
       edgeDisplayId: DEFAULT_DISPLAY_ID,
       isVisible: true,
       alwaysOnTop: false,
@@ -160,6 +175,7 @@ class PaperStoreImpl {
     }
     if (papers.length < MAX_PAPERS) {
       papers.push(paper);
+      this.normalizeEdgeOrders(this.ensureState());
       this.requestSave(immediate);
     }
   }
@@ -175,8 +191,11 @@ class PaperStoreImpl {
         next.push(state.papers[i]);
       }
     }
+    if (next.length === state.papers.length) {
+      return;
+    }
     state.papers = next;
-    this.resequenceEdges();
+    this.normalizeEdgeOrders(state);
     this.requestSave(true);
     this.notifyRevision();
   }
@@ -254,55 +273,62 @@ class PaperStoreImpl {
   }
 
   getCollapsedIndex(id: string): number {
-    const target: PaperData | null = this.getPaper(id);
-    if (target === null) {
-      return 0;
-    }
-    const papers: PaperData[] = this.ensureState().papers;
-    let count: number = 0;
-    for (let i: number = 0; i < papers.length; i++) {
-      const paper: PaperData = papers[i];
-      if (paper.id !== id && paper.isVisible && paper.isCollapsed &&
-        paper.edgeSide === target.edgeSide && paper.edgeDisplayId === target.edgeDisplayId &&
-        paper.edgeOrder < target.edgeOrder) {
-        count += 1;
+    const queue: PaperData[] = this.getCollapsedQueue(id);
+    for (let i: number = 0; i < queue.length; i++) {
+      if (queue[i].id === id) {
+        return i;
       }
     }
-    return count;
+    return 0;
+  }
+
+  getCollapsedCount(id: string): number {
+    return this.getCollapsedQueue(id).length;
   }
 
   moveCollapsedPaper(id: string, requestedIndex: number): void {
     const target: PaperData | null = this.getPaper(id);
-    if (target === null) {
+    if (target === null || !target.isVisible || !target.isCollapsed) {
       return;
     }
-    const queue: PaperData[] = [];
-    const papers: PaperData[] = this.ensureState().papers;
-    for (let i: number = 0; i < papers.length; i++) {
-      const paper: PaperData = papers[i];
-      if (paper.isVisible && paper.isCollapsed && paper.edgeSide === target.edgeSide &&
-        paper.edgeDisplayId === target.edgeDisplayId) {
-        queue.push(paper);
+
+    const state: AppState = this.ensureState();
+    const orderedAll: PaperData[] = state.papers.slice();
+    this.sortByEdgeOrder(orderedAll);
+
+    const queueWithoutTarget: PaperData[] = [];
+    for (let i: number = 0; i < orderedAll.length; i++) {
+      const paper: PaperData = orderedAll[i];
+      if (paper.id !== id && paper.isVisible && paper.isCollapsed &&
+        paper.edgeSide === target.edgeSide && paper.edgeDisplayId === target.edgeDisplayId) {
+        queueWithoutTarget.push(paper);
       }
     }
-    queue.sort((a: PaperData, b: PaperData): number => a.edgeOrder - b.edgeOrder);
-    let oldIndex: number = -1;
-    for (let i: number = 0; i < queue.length; i++) {
-      if (queue[i].id === id) {
-        oldIndex = i;
-        break;
+
+    const nextIndex: number = Math.max(0, Math.min(requestedIndex, queueWithoutTarget.length));
+    const withoutTarget: PaperData[] = [];
+    for (let i: number = 0; i < orderedAll.length; i++) {
+      if (orderedAll[i].id !== id) {
+        withoutTarget.push(orderedAll[i]);
       }
     }
-    if (oldIndex < 0) {
-      return;
+
+    let insertAt: number = withoutTarget.length;
+    if (queueWithoutTarget.length > 0) {
+      if (nextIndex < queueWithoutTarget.length) {
+        insertAt = this.indexOfPaper(withoutTarget, queueWithoutTarget[nextIndex].id);
+      } else {
+        const lastQueueIndex: number = this.indexOfPaper(
+          withoutTarget,
+          queueWithoutTarget[queueWithoutTarget.length - 1].id
+        );
+        insertAt = lastQueueIndex >= 0 ? lastQueueIndex + 1 : withoutTarget.length;
+      }
     }
-    const removed: PaperData[] = queue.splice(oldIndex, 1);
-    const nextIndex: number = Math.max(0, Math.min(requestedIndex, queue.length));
-    queue.splice(nextIndex, 0, removed[0]);
-    for (let i: number = 0; i < queue.length; i++) {
-      queue[i].edgeOrder = i;
-      queue[i].updatedAt = Date.now();
-    }
+    insertAt = Math.max(0, Math.min(insertAt, withoutTarget.length));
+    withoutTarget.splice(insertAt, 0, target);
+    state.papers = withoutTarget;
+    this.normalizeEdgeOrders(state);
     this.requestSave(false);
     this.notifyRevision();
   }
@@ -327,6 +353,7 @@ class PaperStoreImpl {
       this.state = restored;
       this.persistedJson = payload;
       this.storageBlocked = false;
+      this.preserveBackupOnNextFlush = false;
       this.dirty = false;
       this.clearSaveTimers();
       this.publishSettings();
@@ -344,18 +371,19 @@ class PaperStoreImpl {
     }
 
     const payload: string = JSON.stringify(this.state);
-    if (payload === this.persistedJson) {
+    if (payload === this.persistedJson && !this.preserveBackupOnNextFlush) {
       this.dirty = false;
       return true;
     }
 
     try {
-      if (this.persistedJson.length > 0) {
+      if (!this.preserveBackupOnNextFlush && this.persistedJson.length > 0) {
         this.store.putSync(BACKUP_KEY, this.persistedJson);
       }
       this.store.putSync(STATE_KEY, payload);
       this.store.flushSync();
       this.persistedJson = payload;
+      this.preserveBackupOnNextFlush = false;
       this.dirty = false;
       if (this.retryTimer >= 0) {
         clearTimeout(this.retryTimer);
@@ -427,7 +455,13 @@ class PaperStoreImpl {
 
   private loadInitialState(): LoadResult {
     if (this.store === null) {
-      return { state: this.createSafeEmptyState(), persistedJson: '', shouldPersist: false, blocked: true };
+      return {
+        state: this.createSafeEmptyState(),
+        persistedJson: '',
+        shouldPersist: false,
+        blocked: true,
+        preserveBackup: false
+      };
     }
 
     let raw: string = '';
@@ -437,34 +471,83 @@ class PaperStoreImpl {
       backup = this.store.getSync(BACKUP_KEY, '') as string;
     } catch (error) {
       console.error('PaperTodo state read failed: ' + String(error));
-      return { state: this.createSafeEmptyState(), persistedJson: '', shouldPersist: false, blocked: true };
+      return {
+        state: this.createSafeEmptyState(),
+        persistedJson: '',
+        shouldPersist: false,
+        blocked: true,
+        preserveBackup: false
+      };
     }
 
     if (raw.length === 0) {
-      if (backup.length > 0) {
-        const recovered: AppState | null = this.parseState(backup);
-        if (recovered !== null) {
-          return { state: recovered, persistedJson: backup, shouldPersist: true, blocked: false };
-        }
+      if (backup.length === 0) {
+        return {
+          state: this.createDefaultState(),
+          persistedJson: '',
+          shouldPersist: true,
+          blocked: false,
+          preserveBackup: false
+        };
       }
-      return { state: this.createDefaultState(), persistedJson: '', shouldPersist: true, blocked: false };
+
+      const recovered: AppState | null = this.parseState(backup);
+      if (recovered !== null) {
+        // Force a new main state write while keeping the only known-good backup intact.
+        return {
+          state: recovered,
+          persistedJson: '',
+          shouldPersist: true,
+          blocked: false,
+          preserveBackup: true
+        };
+      }
+
+      console.error('PaperTodo main state is empty but backup exists and is invalid; refusing first-run overwrite.');
+      return {
+        state: this.createSafeEmptyState(),
+        persistedJson: '',
+        shouldPersist: false,
+        blocked: true,
+        preserveBackup: true
+      };
     }
 
     const parsed: AppState | null = this.parseState(raw);
     if (parsed !== null) {
       const normalized: string = JSON.stringify(parsed);
-      return { state: parsed, persistedJson: raw, shouldPersist: normalized !== raw, blocked: false };
+      return {
+        state: parsed,
+        persistedJson: raw,
+        shouldPersist: normalized !== raw,
+        blocked: false,
+        preserveBackup: false
+      };
     }
 
     if (backup.length > 0) {
       const recovered: AppState | null = this.parseState(backup);
       if (recovered !== null) {
-        return { state: recovered, persistedJson: backup, shouldPersist: true, blocked: false };
+        // The main payload is invalid. Do not rotate it into BACKUP_KEY and destroy
+        // the only valid recovery point.
+        return {
+          state: recovered,
+          persistedJson: '',
+          shouldPersist: true,
+          blocked: false,
+          preserveBackup: true
+        };
       }
     }
 
     console.error('PaperTodo main state and backup are both invalid; refusing to overwrite stored data.');
-    return { state: this.createSafeEmptyState(), persistedJson: raw, shouldPersist: false, blocked: true };
+    return {
+      state: this.createSafeEmptyState(),
+      persistedJson: raw,
+      shouldPersist: false,
+      blocked: true,
+      preserveBackup: true
+    };
   }
 
   private parseState(raw: string): AppState | null {
@@ -474,6 +557,11 @@ class PaperStoreImpl {
     try {
       const parsed: AppState = JSON.parse(raw) as AppState;
       if (parsed.papers === undefined || !Array.isArray(parsed.papers)) {
+        return null;
+      }
+      const sourceVersion: number = Number.isFinite(parsed.schemaVersion) ? parsed.schemaVersion : 1;
+      if (sourceVersion > SCHEMA_VERSION) {
+        console.error('PaperTodo state schema is newer than this build; refusing destructive downgrade normalization.');
         return null;
       }
       this.normalizeState(parsed);
@@ -511,22 +599,29 @@ class PaperStoreImpl {
     for (let i: number = 0; i < state.papers.length; i++) {
       this.normalizePaper(state.papers[i], i);
     }
+    this.normalizeEdgeOrders(state);
   }
 
   private normalizePaper(paper: PaperData, fallbackOrder: number): void {
     if (paper.type !== PAPER_TYPE_NOTE) {
       paper.type = PAPER_TYPE_TODO;
     }
-    if (paper.title === undefined) {
+    if (typeof paper.id !== 'string' || paper.id.length === 0) {
+      paper.id = this.nextId('paper');
+    }
+    if (typeof paper.title !== 'string') {
       paper.title = '';
     }
     paper.title = paper.title.slice(0, TITLE_MAX_LENGTH);
 
-    const legacyX: number = paper.x !== undefined ? paper.x : 120;
-    const legacyY: number = paper.y !== undefined ? paper.y : 120;
-    const legacyWidth: number = paper.width !== undefined ? paper.width :
+    // Schemas <=2 used these same numeric design values without declaring a unit.
+    // Treat them as logical vp from schema 3 onward; this fixes the former mixed
+    // vp/px model without multiplying already persisted numbers a second time.
+    const legacyX: number = paper.x !== undefined && Number.isFinite(paper.x) ? paper.x : 120;
+    const legacyY: number = paper.y !== undefined && Number.isFinite(paper.y) ? paper.y : 120;
+    const legacyWidth: number = paper.width !== undefined && Number.isFinite(paper.width) ? paper.width :
       (paper.type === PAPER_TYPE_NOTE ? NOTE_DEFAULT_WIDTH : TODO_DEFAULT_WIDTH);
-    const legacyHeight: number = paper.height !== undefined ? paper.height :
+    const legacyHeight: number = paper.height !== undefined && Number.isFinite(paper.height) ? paper.height :
       (paper.type === PAPER_TYPE_NOTE ? NOTE_DEFAULT_HEIGHT : TODO_DEFAULT_HEIGHT);
 
     if (!Number.isFinite(paper.expandedX)) {
@@ -553,21 +648,29 @@ class PaperStoreImpl {
     if (!Number.isFinite(paper.edgeOrder) || paper.edgeOrder < 0) {
       paper.edgeOrder = fallbackOrder;
     }
-    if (paper.edgeDisplayId === undefined || paper.edgeDisplayId.length === 0) {
+    if (typeof paper.edgeDisplayId !== 'string' || paper.edgeDisplayId.length === 0) {
       paper.edgeDisplayId = DEFAULT_DISPLAY_ID;
     }
-    if (paper.items === undefined) {
+    paper.isVisible = paper.isVisible !== false;
+    paper.alwaysOnTop = paper.alwaysOnTop === true;
+    paper.isCollapsed = paper.isCollapsed === true;
+
+    if (!Array.isArray(paper.items)) {
       paper.items = [];
     }
     for (let i: number = 0; i < paper.items.length; i++) {
       const item: PaperItem = paper.items[i];
-      if (item.text === undefined) {
+      if (typeof item.id !== 'string' || item.id.length === 0) {
+        item.id = this.nextId('item');
+      }
+      if (typeof item.text !== 'string') {
         item.text = '';
       }
       item.text = item.text.slice(0, TODO_ITEM_MAX_LENGTH);
+      item.done = item.done === true;
       item.order = i;
     }
-    if (paper.content === undefined) {
+    if (typeof paper.content !== 'string') {
       paper.content = '';
     }
     paper.content = paper.content.slice(0, NOTE_MAX_LENGTH);
@@ -579,12 +682,52 @@ class PaperStoreImpl {
     }
   }
 
-  private resequenceEdges(): void {
-    const papers: PaperData[] = this.ensureState().papers.slice();
-    papers.sort((a: PaperData, b: PaperData): number => a.edgeOrder - b.edgeOrder);
-    for (let i: number = 0; i < papers.length; i++) {
-      papers[i].edgeOrder = i;
+  private getCollapsedQueue(id: string): PaperData[] {
+    const target: PaperData | null = this.getPaper(id);
+    if (target === null) {
+      return [];
     }
+    const queue: PaperData[] = [];
+    const papers: PaperData[] = this.ensureState().papers;
+    for (let i: number = 0; i < papers.length; i++) {
+      const paper: PaperData = papers[i];
+      if (paper.isVisible && paper.isCollapsed && paper.edgeSide === target.edgeSide &&
+        paper.edgeDisplayId === target.edgeDisplayId) {
+        queue.push(paper);
+      }
+    }
+    this.sortByEdgeOrder(queue);
+    return queue;
+  }
+
+  private normalizeEdgeOrders(state: AppState): void {
+    const ordered: PaperData[] = state.papers.slice();
+    this.sortByEdgeOrder(ordered);
+    for (let i: number = 0; i < ordered.length; i++) {
+      ordered[i].edgeOrder = i;
+    }
+    state.papers = ordered;
+  }
+
+  private sortByEdgeOrder(papers: PaperData[]): void {
+    papers.sort((a: PaperData, b: PaperData): number => {
+      if (a.edgeOrder !== b.edgeOrder) {
+        return a.edgeOrder - b.edgeOrder;
+      }
+      if (a.createdAt !== b.createdAt) {
+        return a.createdAt - b.createdAt;
+      }
+      return a.id < b.id ? -1 : (a.id > b.id ? 1 : 0);
+    });
+  }
+
+  private indexOfPaper(papers: PaperData[], id: string): number {
+    for (let i: number = 0; i < papers.length; i++) {
+      if (papers[i].id === id) {
+        return i;
+      }
+    }
+    return -1;
   }
 
   private nextEdgeOrder(state: AppState): number {
