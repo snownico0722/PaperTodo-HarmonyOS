@@ -1,0 +1,2 @@
+# PaperTodo HarmonyOS obfuscation rules.
+# Obfuscation is disabled for the initial foundation build.

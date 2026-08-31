@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "PaperTodo HarmonyOS entry module"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "PaperTodo"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "PaperTodo"
+    }
+  ]
+}
