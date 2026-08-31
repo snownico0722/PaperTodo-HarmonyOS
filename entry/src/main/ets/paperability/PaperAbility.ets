@@ -136,6 +136,7 @@ export default class PaperAbility extends UIAbility {
     if (this.paperId.length > 0) {
       AppStorage.setOrCreate<boolean>('paperOpen:' + this.paperId, false);
       AppStorage.delete('paperWindow:' + this.paperId);
+      PaperStore.notifyLayoutChanged();
     }
     this.mainWindow = null;
   }
@@ -191,6 +192,7 @@ export default class PaperAbility extends UIAbility {
     this.mainWindow = mainWindow;
     AppStorage.setOrCreate<window.Window>('paperWindow:' + this.paperId, mainWindow);
     AppStorage.setOrCreate<boolean>('paperOpen:' + this.paperId, true);
+    PaperStore.notifyLayoutChanged();
 
     try {
       await mainWindow.recover();
@@ -359,7 +361,9 @@ export default class PaperAbility extends UIAbility {
       return;
     }
     try {
-      win.showWindow().catch((error: BusinessError): void => {
+      win.showWindow().then((): void => {
+        PaperStore.notifyLayoutChanged();
+      }).catch((error: BusinessError): void => {
         hilog.warn(DOMAIN, TAG, 'show paper window failed: %{public}s', error.message);
       });
     } catch (error) {
