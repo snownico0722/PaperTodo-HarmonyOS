@@ -1,0 +1,142 @@
+name: HarmonyOS Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_mode:
+        description: Build mode
+        required: true
+        default: debug
+        type: choice
+        options:
+          - debug
+          - release
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/harmonyos-package.yml'
+
+concurrency:
+  group: harmonyos-package-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Package APP and HAP
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Cache HarmonyOS Command Line Tools
+        id: cache-tools
+        uses: actions/cache@v4
+        with:
+          path: command-line-tools
+          key: ${{ runner.os }}-harmonyos-cli-6.1.0.816
+
+      - name: Download HarmonyOS Command Line Tools
+        if: steps.cache-tools.outputs.cache-hit != 'true'
+        run: |
+          curl --fail --location --retry 3 \
+            --output tools.zip \
+            https://github.com/Okysu/harmony-auto-build/releases/download/commandline-tools-linux-x64-6.1.0.816/commandline-tools-linux-x64-6.1.0.816.zip
+          echo "4b21e8a4ce19fc7eb381425a570e936c80067b8a0bef9cdcfe8a49e4764038e2  tools.zip" | sha256sum --check -
+          unzip -q tools.zip
+          rm tools.zip
+
+      - name: Setup HarmonyOS build environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOOLS_DIR="$GITHUB_WORKSPACE/command-line-tools"
+          echo "hwsdk.dir=$TOOLS_DIR/sdk" > local.properties
+          echo "$TOOLS_DIR/bin" >> "$GITHUB_PATH"
+          echo "OHPM_HOME=$TOOLS_DIR/ohpm" >> "$GITHUB_ENV"
+          echo "HOS_SDK_HOME=$TOOLS_DIR/sdk" >> "$GITHUB_ENV"
+          chmod -R +x "$TOOLS_DIR/bin"
+
+      - name: Resolve package metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUILD_MODE="debug"
+          VERSION="sha-${GITHUB_SHA:0:7}"
+
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            BUILD_MODE="${{ inputs.build_mode }}"
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            BUILD_MODE="release"
+            VERSION="$GITHUB_REF_NAME"
+          fi
+
+          VERSION="$(printf '%s' "$VERSION" | tr -cs 'A-Za-z0-9._-' '-')"
+          PACKAGE_BASENAME="PaperTodo-HarmonyOS-${VERSION}-${BUILD_MODE}-unsigned"
+
+          echo "BUILD_MODE=$BUILD_MODE" >> "$GITHUB_ENV"
+          echo "PACKAGE_BASENAME=$PACKAGE_BASENAME" >> "$GITHUB_ENV"
+          echo "Build mode: $BUILD_MODE"
+          echo "Package: $PACKAGE_BASENAME"
+
+      - name: Install dependencies
+        run: ohpm install
+
+      - name: Assemble HarmonyOS APP
+        run: hvigorw assembleApp --mode project -p product=default -p buildMode=${BUILD_MODE} -p enableSignTask=false --no-daemon
+
+      - name: Collect package outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p package/payload
+
+          mapfile -t OUTPUTS < <(
+            find . -type f \
+              \( -name '*.app' -o -name '*.hap' \) \
+              -path '*/build/*/outputs/*' \
+              -print | sort
+          )
+
+          if [[ ${#OUTPUTS[@]} -eq 0 ]]; then
+            echo 'No .app or .hap output was produced.' >&2
+            exit 1
+          fi
+
+          printf 'Collected outputs:\n'
+          printf '  %s\n' "${OUTPUTS[@]}"
+
+          for file in "${OUTPUTS[@]}"; do
+            cp "$file" package/payload/
+          done
+
+          (
+            cd package/payload
+            sha256sum ./* > SHA256SUMS
+            zip -9 "../${PACKAGE_BASENAME}.zip" ./*
+          )
+
+          ls -lah package package/payload
+
+      - name: Upload packaged build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_BASENAME }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            package/${{ env.PACKAGE_BASENAME }}.zip
+            package/payload/*.app
+            package/payload/*.hap
+            package/payload/SHA256SUMS
