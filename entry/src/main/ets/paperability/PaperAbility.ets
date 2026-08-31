@@ -15,6 +15,8 @@ import {
   edgeCapsuleY
 } from '../common/CapsuleGeometry';
 import {
+  CAPSULE_HEIGHT,
+  CAPSULE_WIDTH,
   PAPER_MIN_HEIGHT,
   PAPER_MIN_WIDTH,
   AppState,
@@ -41,6 +43,7 @@ interface PaperLocalStorageData {
 
 export default class PaperAbility extends UIAbility {
   private paperId: string = '';
+  private initialCommand: string = 'show';
   private storage: LocalStorage = new LocalStorage();
   private mainWindow: window.Window | null = null;
   private rectChangeCallback: ((data: window.RectChangeOptions) => void) | null = null;
@@ -48,6 +51,9 @@ export default class PaperAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     PaperStore.initialize(this.context);
     this.paperId = this.readPaperId(want);
+    this.initialCommand = this.readCommand(want);
+    this.applyInitialCommand();
+
     const paper: PaperData | null = PaperStore.getPaper(this.paperId);
     const storageData: PaperLocalStorageData = {
       paperId: this.paperId,
@@ -70,18 +76,18 @@ export default class PaperAbility extends UIAbility {
     if (command === 'hide') {
       PaperStore.setPaperVisible(this.paperId, false);
       PaperStore.flushNow();
-      this.context.terminateSelf();
+      this.terminatePaperAbility();
       return;
     }
     if (command === 'delete') {
       PaperStore.deletePaper(this.paperId);
       PaperStore.flushNow();
-      this.context.terminateSelf();
+      this.terminatePaperAbility();
       return;
     }
     if (command === 'close') {
       PaperStore.flushNow();
-      this.context.terminateSelf();
+      this.terminatePaperAbility();
       return;
     }
 
@@ -90,13 +96,18 @@ export default class PaperAbility extends UIAbility {
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
+    if (this.isTerminalCommand(this.initialCommand)) {
+      this.terminatePaperAbility();
+      return;
+    }
+
     this.prepareMainWindow(windowStage).then((): void => {
       windowStage.loadContent('pages/Paper', this.storage, (err: BusinessError): void => {
         if (err.code !== 0) {
           hilog.error(DOMAIN, TAG, 'Failed to load Paper page: %{public}s', JSON.stringify(err));
         }
       });
-    }).catch((error: BusinessError): void => {
+    }).catch((error: Error): void => {
       hilog.error(DOMAIN, TAG, 'prepare Paper window failed: %{public}s', error.message);
       windowStage.loadContent('pages/Paper', this.storage, (err: BusinessError): void => {
         if (err.code !== 0) {
@@ -125,16 +136,39 @@ export default class PaperAbility extends UIAbility {
       AppStorage.setOrCreate<number>('systemColorMode', config.colorMode);
     }
     if (this.mainWindow !== null) {
-      this.applyStoredGeometry(this.mainWindow).catch((error: BusinessError): void => {
+      this.applyStoredGeometry(this.mainWindow).catch((error: Error): void => {
         hilog.warn(DOMAIN, TAG, 'reapply geometry failed: %{public}s', error.message);
       });
     }
   }
 
+  private applyInitialCommand(): void {
+    if (this.paperId.length === 0) {
+      this.initialCommand = 'close';
+      return;
+    }
+    if (this.initialCommand === 'hide') {
+      PaperStore.setPaperVisible(this.paperId, false);
+      PaperStore.flushNow();
+    } else if (this.initialCommand === 'delete') {
+      PaperStore.deletePaper(this.paperId);
+      PaperStore.flushNow();
+    } else if (this.initialCommand === 'close') {
+      PaperStore.flushNow();
+    } else {
+      this.initialCommand = 'show';
+      PaperStore.setPaperVisible(this.paperId, true);
+    }
+  }
+
+  private isTerminalCommand(command: string): boolean {
+    return command === 'hide' || command === 'delete' || command === 'close';
+  }
+
   private async prepareMainWindow(windowStage: window.WindowStage): Promise<void> {
     const paper: PaperData | null = PaperStore.getPaper(this.paperId);
     if (paper === null) {
-      await this.context.terminateSelf();
+      this.terminatePaperAbility();
       return;
     }
 
@@ -205,8 +239,16 @@ export default class PaperAbility extends UIAbility {
         xPx = edgeCapsuleHiddenX(metrics);
         yPx = edgeCapsuleY(index, metrics);
       } else {
-        paper.capsuleX = this.clamp(paper.capsuleX, 0, Math.max(0, displayGeometry.screenWidthVp - 108));
-        paper.capsuleY = this.clamp(paper.capsuleY, 0, Math.max(0, displayGeometry.screenHeightVp - 46));
+        paper.capsuleX = this.clamp(
+          paper.capsuleX,
+          0,
+          Math.max(0, displayGeometry.screenWidthVp - CAPSULE_WIDTH)
+        );
+        paper.capsuleY = this.clamp(
+          paper.capsuleY,
+          0,
+          Math.max(0, displayGeometry.screenHeightVp - CAPSULE_HEIGHT)
+        );
         xPx = vpToPx(paper.capsuleX, displayGeometry.density);
         yPx = vpToPx(paper.capsuleY, displayGeometry.density);
       }
@@ -279,6 +321,16 @@ export default class PaperAbility extends UIAbility {
       });
     } catch (error) {
       hilog.warn(DOMAIN, TAG, 'show paper window threw: %{public}s', String(error));
+    }
+  }
+
+  private terminatePaperAbility(): void {
+    try {
+      this.context.terminateSelf().catch((error: BusinessError): void => {
+        hilog.warn(DOMAIN, TAG, 'terminate PaperAbility failed: %{public}s', error.message);
+      });
+    } catch (error) {
+      hilog.warn(DOMAIN, TAG, 'terminate PaperAbility threw: %{public}s', String(error));
     }
   }
 
