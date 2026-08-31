@@ -53,6 +53,8 @@ jobs:
 
           JWT="$(node <<'NODE'
           const crypto = require('crypto');
+          const EXPECTED_AUD = 'https://oauth-login.cloud.huawei.com/oauth2/v3/token';
+          const EXPECTED_PROJECT_ID = '101653523864902953';
 
           function base64url(value) {
             return Buffer.from(JSON.stringify(value)).toString('base64url');
@@ -67,18 +69,24 @@ jobs:
             process.exit(2);
           }
 
-          for (const key of ['key_id', 'private_key', 'sub_account', 'token_uri']) {
+          for (const key of ['project_id', 'key_id', 'private_key', 'sub_account']) {
             if (!account[key]) {
               console.error(`AGC Service Account JSON is missing ${key}.`);
               process.exit(2);
             }
           }
 
+          if (String(account.project_id) !== EXPECTED_PROJECT_ID) {
+            console.error('AGC Service Account belongs to a different project than PaperTodo.');
+            process.exit(2);
+          }
+          console.error('AGC Service Account project binding matches PaperTodo.');
+
           const now = Math.floor(Date.now() / 1000);
           const header = { kid: account.key_id, typ: 'JWT', alg: 'PS256' };
           const payload = {
             iss: account.sub_account,
-            aud: account.token_uri,
+            aud: EXPECTED_AUD,
             iat: now,
             exp: now + 3600
           };
@@ -98,29 +106,11 @@ jobs:
 
           echo "::add-mask::$JWT"
 
-          # First verify that the Service Account JWT itself is accepted by Connect API.
-          PROJECT_BODY="$(mktemp)"
-          PROJECT_STATUS="$(curl --silent --show-error \
-            --output "$PROJECT_BODY" \
-            --write-out '%{http_code}' \
-            --request GET \
-            --header "Authorization: Bearer $JWT" \
-            --header 'Content-Type: application/json' \
-            'https://connect-api.cloud.huawei.com/api/project-service/v1/projects')"
-
-          if [[ "$PROJECT_STATUS" != '200' ]]; then
-            echo "AGC Service Account JWT was rejected by Project Management API with HTTP $PROJECT_STATUS." >&2
-            rm -f "$PROJECT_BODY"
-            echo 'AGC_PROVISIONING_AVAILABLE=false' >> "$GITHUB_ENV"
-            exit 0
-          fi
-          rm -f "$PROJECT_BODY"
-          echo 'AGC Service Account JWT accepted by Project Management API.'
-
-          # Then verify the app-scoped certificate/Profile permission separately.
           PROFILE_BODY="$(mktemp)"
+          HEADER_BODY="$(mktemp)"
           PROFILE_STATUS="$(curl --silent --show-error \
             --output "$PROFILE_BODY" \
+            --dump-header "$HEADER_BODY" \
             --write-out '%{http_code}' \
             --request GET \
             --header "Authorization: Bearer $JWT" \
@@ -132,14 +122,20 @@ jobs:
           rm -f "$PROFILE_BODY"
 
           if [[ "$PROFILE_STATUS" != '200' ]]; then
-            echo "AGC Service Account JWT is valid, but Provisioning API returned HTTP $PROFILE_STATUS." >&2
+            echo "AGC Provisioning API returned HTTP $PROFILE_STATUS; unsigned release build will continue." >&2
             if jq -e . >/dev/null 2>&1 <<<"$PROFILE_RESPONSE"; then
               jq '{ret: (.ret // null), code: (.code // null), message: (.message // .msg // null)}' \
                 <<<"$PROFILE_RESPONSE" >&2
             fi
+            REQUEST_ID="$(grep -iE '^(x-request-id|request-id|x-envoy-upstream-service-time):' "$HEADER_BODY" | tr '\n' ' ' || true)"
+            if [[ -n "$REQUEST_ID" ]]; then
+              echo "AGC response diagnostic headers: $REQUEST_ID" >&2
+            fi
+            rm -f "$HEADER_BODY"
             echo 'AGC_PROVISIONING_AVAILABLE=false' >> "$GITHUB_ENV"
             exit 0
           fi
+          rm -f "$HEADER_BODY"
 
           RET_CODE="$(jq -r '.ret.code // -1' <<<"$PROFILE_RESPONSE")"
           if [[ "$RET_CODE" != '0' ]]; then
