@@ -55,8 +55,6 @@ const CAPSULE_REVEAL_MS: number = 110;
 const CAPSULE_HIDE_MS: number = 130;
 const CAPSULE_DRAG_THRESHOLD: number = 4;
 const CAPSULE_CLICK_SUPPRESS_MS: number = 250;
-const KEYCODE_ENTER: number = 66;
-const KEYCODE_NUMPAD_ENTER: number = 160;
 
 interface NoteEditResult {
   text: string;
@@ -695,7 +693,9 @@ struct PaperDesktop {
     }
     let ctrl: boolean = false;
     try {
-      ctrl = event.getModifierKeyState(['Ctrl']);
+      if (event.getModifierKeyState !== undefined) {
+        ctrl = event.getModifierKeyState(['Ctrl']);
+      }
     } catch (error) {
       ctrl = false;
     }
@@ -821,7 +821,7 @@ struct PaperDesktop {
     this.savePaper(false);
     event.stopPropagation();
     setTimeout((): void => {
-      this.getUIContext().getFocusControl().requestFocus('todo-input-' + focusId);
+      this.getUIContext().getFocusController().requestFocus('todo-input-' + focusId);
     }, 20);
   }
 
@@ -842,7 +842,7 @@ struct PaperDesktop {
     this.items = this.renumberItems(next);
     this.savePaper(false);
     setTimeout((): void => {
-      this.getUIContext().getFocusControl().requestFocus('todo-input-' + created.id);
+      this.getUIContext().getFocusController().requestFocus('todo-input-' + created.id);
     }, 20);
   }
 
