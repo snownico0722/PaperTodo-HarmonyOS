@@ -32,41 +32,82 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify AGC Provisioning API credentials
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Verify AGC Service Account
         shell: bash
         env:
-          AGC_API_CLIENT_ID: ${{ secrets.AGC_API_CLIENT_ID }}
-          AGC_API_CLIENT_KEY: ${{ secrets.AGC_API_CLIENT_KEY }}
+          AGC_SERVICE_ACCOUNT_JSON: ${{ secrets.AGC_SERVICE_ACCOUNT_JSON }}
           AGC_APP_ID: ${{ secrets.AGC_APP_ID }}
         run: |
           set -euo pipefail
 
-          if [[ -z "${AGC_API_CLIENT_ID:-}" || -z "${AGC_API_CLIENT_KEY:-}" || -z "${AGC_APP_ID:-}" ]]; then
-            echo 'AGC credentials are not available in this workflow context; unsigned release build will continue.'
+          if [[ -z "${AGC_SERVICE_ACCOUNT_JSON:-}" || -z "${AGC_APP_ID:-}" ]]; then
+            echo 'AGC Service Account credentials are unavailable; unsigned release build will continue.'
             echo 'AGC_PROVISIONING_AVAILABLE=false' >> "$GITHUB_ENV"
             exit 0
           fi
 
-          TOKEN_RESPONSE="$(curl --silent --show-error --fail-with-body \
-            --request POST \
-            --header 'Content-Type: application/json' \
-            --data "$(jq -n \
-              --arg client_id "$AGC_API_CLIENT_ID" \
-              --arg client_secret "$AGC_API_CLIENT_KEY" \
-              '{client_id:$client_id, client_secret:$client_secret, grant_type:"client_credentials"}')" \
-            'https://connect-api.cloud.huawei.com/api/oauth2/v1/token')"
+          JWT="$(node <<'NODE'
+          const crypto = require('crypto');
 
-          ACCESS_TOKEN="$(jq -er '.access_token' <<<"$TOKEN_RESPONSE")"
-          echo "::add-mask::$ACCESS_TOKEN"
-          echo 'AGC access token acquired successfully.'
+          function base64url(value) {
+            return Buffer.from(JSON.stringify(value)).toString('base64url');
+          }
+
+          const raw = process.env.AGC_SERVICE_ACCOUNT_JSON;
+          let account;
+          try {
+            account = JSON.parse(raw);
+          } catch (error) {
+            console.error('AGC_SERVICE_ACCOUNT_JSON is not valid JSON.');
+            process.exit(2);
+          }
+
+          for (const key of ['key_id', 'private_key', 'sub_account', 'token_uri']) {
+            if (!account[key]) {
+              console.error(`AGC Service Account JSON is missing ${key}.`);
+              process.exit(2);
+            }
+          }
+
+          const now = Math.floor(Date.now() / 1000);
+          const header = {
+            kid: account.key_id,
+            typ: 'JWT',
+            alg: 'PS256'
+          };
+          const payload = {
+            iss: account.sub_account,
+            aud: account.token_uri,
+            iat: now,
+            exp: now + 3600
+          };
+          const signingInput = `${base64url(header)}.${base64url(payload)}`;
+          const signature = crypto.sign('sha256', Buffer.from(signingInput), {
+            key: account.private_key,
+            padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
+            saltLength: 32
+          });
+          process.stdout.write(`${signingInput}.${signature.toString('base64url')}`);
+          NODE
+          )" || {
+            echo 'Failed to generate AGC Service Account JWT; unsigned release build will continue.' >&2
+            echo 'AGC_PROVISIONING_AVAILABLE=false' >> "$GITHUB_ENV"
+            exit 0
+          }
+
+          echo "::add-mask::$JWT"
 
           TMP_BODY="$(mktemp)"
           HTTP_STATUS="$(curl --silent --show-error \
             --output "$TMP_BODY" \
             --write-out '%{http_code}' \
             --request GET \
-            --header "client_id: $AGC_API_CLIENT_ID" \
-            --header "Authorization: Bearer $ACCESS_TOKEN" \
+            --header "Authorization: Bearer $JWT" \
             --header "appId: $AGC_APP_ID" \
             --header 'Content-Type: application/json' \
             'https://connect-api.cloud.huawei.com/api/publish/v3/provision/list?fromRecCount=1&maxReqCount=10')"
@@ -75,7 +116,7 @@ jobs:
           rm -f "$TMP_BODY"
 
           if [[ "$HTTP_STATUS" != '200' ]]; then
-            echo "AGC Provisioning API probe failed with HTTP $HTTP_STATUS; unsigned release build will continue." >&2
+            echo "AGC Service Account probe failed with HTTP $HTTP_STATUS; unsigned release build will continue." >&2
             if jq -e . >/dev/null 2>&1 <<<"$PROFILE_RESPONSE"; then
               jq '{ret: (.ret // null), code: (.code // null), message: (.message // .msg // null)}' \
                 <<<"$PROFILE_RESPONSE" >&2
@@ -92,13 +133,8 @@ jobs:
           fi
 
           TOTAL_COUNT="$(jq -r '.totalCount // 0' <<<"$PROFILE_RESPONSE")"
-          echo "AGC Provisioning API authentication succeeded; visible profiles: $TOTAL_COUNT"
+          echo "AGC Service Account authentication succeeded; visible profiles: $TOTAL_COUNT"
           echo 'AGC_PROVISIONING_AVAILABLE=true' >> "$GITHUB_ENV"
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
 
       - name: Cache HarmonyOS Command Line Tools
         id: cache-tools
