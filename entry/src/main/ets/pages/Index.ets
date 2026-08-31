@@ -27,6 +27,9 @@ struct Index {
   @StorageLink('useDeepCapsuleMode') useDeepCapsuleMode: boolean = true;
   @StorageLink('todoVisualSize') todoVisualSize: string = TODO_VISUAL_MEDIUM;
   @StorageLink('autoBottomCompleted') autoBottomCompleted: boolean = false;
+  @StorageLink('autoClearCompletedTodos') autoClearCompletedTodos: boolean = false;
+  @StorageLink('enableTodoNoteLinks') enableTodoNoteLinks: boolean = true;
+  @StorageLink('showLinkedNoteName') showLinkedNoteName: boolean = false;
   @StorageLink('capsuleGap') capsuleGap: number = 4;
   @StorageLink('paperRevision') @Watch('onPaperRevision') paperRevision: number = 0;
   @StorageLink('systemColorMode') systemColorMode: number = ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT;
@@ -263,6 +266,18 @@ struct Index {
     PaperStore.setAutoBottomCompleted(!this.autoBottomCompleted);
   }
 
+  private toggleAutoClearCompleted(): void {
+    PaperStore.setAutoClearCompletedTodos(!this.autoClearCompletedTodos);
+  }
+
+  private toggleTodoNoteLinks(): void {
+    PaperStore.setEnableTodoNoteLinks(!this.enableTodoNoteLinks);
+  }
+
+  private toggleLinkedNoteName(): void {
+    PaperStore.setShowLinkedNoteName(!this.showLinkedNoteName);
+  }
+
   private cycleCapsuleGap(): void {
     if (this.capsuleGap === 0) {
       PaperStore.setCapsuleGap(4);
@@ -360,7 +375,7 @@ struct Index {
             .fontSize(30)
             .fontWeight(FontWeight.Medium)
             .fontColor(this.textColor())
-          Text('纸片控制中心 · 基础行为已按 3.x 经验收敛')
+          Text('纸片控制中心 · Windows 2.2 行为对齐')
             .fontSize(12)
             .fontColor(this.mutedColor())
             .margin({ top: 4 })
@@ -408,11 +423,19 @@ struct Index {
       Flex({ wrap: FlexWrap.Wrap }) {
         this.SettingButton('主题：' + this.themeLabel(), (): void => this.cycleTheme())
         this.SettingButton('Markdown：' + this.markdownLabel(), (): void => this.cycleMarkdownMode())
-        this.SettingButton('胶囊：' + (this.useCapsuleMode ? '开启' : '关闭'), (): void => this.toggleCapsule())
-        this.SettingButton('自动贴边：' + (this.useDeepCapsuleMode ? '开启' : '关闭'), (): void => this.toggleDeepCapsule())
         this.SettingButton('待办大小：' + this.todoVisualSizeLabel(), (): void => this.cycleTodoVisualSize())
         this.SettingButton('完成项置底：' + (this.autoBottomCompleted ? '开启' : '关闭'),
           (): void => this.toggleAutoBottomCompleted())
+        this.SettingButton('完成后清除：' + (this.autoClearCompletedTodos ? '开启' : '关闭'),
+          (): void => this.toggleAutoClearCompleted())
+        this.SettingButton('待办关联笔记：' + (this.enableTodoNoteLinks ? '开启' : '关闭'),
+          (): void => this.toggleTodoNoteLinks())
+        if (this.enableTodoNoteLinks) {
+          this.SettingButton('关联显示标题：' + (this.showLinkedNoteName ? '开启' : '关闭'),
+            (): void => this.toggleLinkedNoteName())
+        }
+        this.SettingButton('胶囊：' + (this.useCapsuleMode ? '开启' : '关闭'), (): void => this.toggleCapsule())
+        this.SettingButton('自动贴边：' + (this.useDeepCapsuleMode ? '开启' : '关闭'), (): void => this.toggleDeepCapsule())
         this.SettingButton('胶囊间距：' + this.capsuleGap.toString(), (): void => this.cycleCapsuleGap())
       }
       .width('100%')
@@ -515,11 +538,16 @@ struct Index {
         .scrollBar(BarState.Off)
       }
 
-      Text('编辑先更新内存；空闲约 1 秒落盘，持续输入最长约 10 秒强制保存，并保留上一份成功状态。')
+      Text('待办列表支持 100 步结构撤销/重做、Enter 插入、空行 Backspace 删除、拖到底部删除与关联笔记。')
         .width('100%')
         .fontSize(11)
         .fontColor(this.mutedColor())
         .margin({ top: 8 })
+      Text('编辑先更新内存；空闲约 1 秒落盘，持续输入最长约 10 秒强制保存，并保留上一份成功状态。')
+        .width('100%')
+        .fontSize(11)
+        .fontColor(this.mutedColor())
+        .margin({ top: 3 })
     }
     .width('100%')
     .height('100%')
