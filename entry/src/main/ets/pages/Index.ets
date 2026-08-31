@@ -417,7 +417,9 @@ struct Index {
                     .height(32)
                     .fontSize(11)
                     .margin({ left: 6 })
-                    .onClick((): void => this.confirmDeleteId = '')
+                    .onClick((): void => {
+                      this.confirmDeleteId = '';
+                    })
                   Button('确认删除')
                     .height(32)
                     .fontSize(11)
