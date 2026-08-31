@@ -333,7 +333,7 @@ struct Paper {
       return;
     }
     const want: Want = {
-      bundleName: 'com.snownico.papertodo',
+      bundleName: 'com.papertodo.app',
       moduleName: 'entry',
       abilityName: 'PaperAbility',
       parameters: {

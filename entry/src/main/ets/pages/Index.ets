@@ -103,7 +103,7 @@ struct Index {
 
   private startPaper(paperId: string, command: string = 'show'): void {
     const want: Want = {
-      bundleName: 'com.snownico.papertodo',
+      bundleName: 'com.papertodo.app',
       moduleName: 'entry',
       abilityName: 'PaperAbility',
       parameters: {

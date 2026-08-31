@@ -97,7 +97,7 @@ export default class EntryAbility extends UIAbility {
 
   private async startPaper(paperId: string): Promise<boolean> {
     const want: Want = {
-      bundleName: 'com.snownico.papertodo',
+      bundleName: 'com.papertodo.app',
       moduleName: 'entry',
       abilityName: 'PaperAbility',
       parameters: {
