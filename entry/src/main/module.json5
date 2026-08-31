@@ -55,8 +55,7 @@
         "startWindowBackground": "$color:start_window_background",
         "launchType": "specified",
         "supportWindowMode": [
-          "floating",
-          "fullscreen"
+          "floating"
         ],
         "exported": false
       }
