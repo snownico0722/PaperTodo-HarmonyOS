@@ -6,7 +6,7 @@ PaperTodo 的 HarmonyOS 原生版本，使用 ArkTS + ArkUI 重写。当前功�
 
 - HarmonyOS Stage 模型
 - HarmonyOS SDK `6.1.0 / API 23`
-- `phone` / `tablet` / `2in1` 工程目标
+- 首版工程目标仅为 HarmonyOS PC / `2in1`
 - GitHub Actions 已真实通过 `assembleHap` 与 `assembleApp`
 - 普通代码 PR 同时验证 HAP 编译与完整 APP 打包
 - 可生成 unsigned `.hap`、`.app`、`SHA256SUMS` 和完整 ZIP
@@ -36,6 +36,8 @@ PaperTodo 的 HarmonyOS 原生版本，使用 ArkTS + ArkUI 重写。当前功�
 - Ability 进入后台或销毁前强制 flush
 - backup 始终保留“上一份成功落盘状态”
 - 控制中心支持手动恢复上一份有效备份
+- 主状态损坏时从有效 backup 恢复会重新建立主状态，同时保留唯一有效 backup
+- 遇到未来版本 schema 时进入保护状态，拒绝破坏性降级覆盖
 
 ### Todo 纸
 
@@ -68,32 +70,40 @@ PaperTodo 的 HarmonyOS 原生版本，使用 ArkTS + ArkUI 重写。当前功�
 - 无系统标题栏
 - 拖动移动
 - 自定义缩放手柄
-- 最小尺寸限制
+- 展开态最小尺寸限制
 - 单纸片 Topmost
 - 隐藏 / 删除
 - 从任意纸片新建 Todo / Note，新纸片默认靠近来源纸片
 - 启动时恢复所有可见纸片
 - 启动恢复时会把展开纸片夹回当前显示范围，降低窗口丢到屏幕外的风险
-- 2in1 启动纸片后控制中心尝试自动退到后台
+- 控制中心使用普通主窗口最小化；再次点击应用图标通过 `showWindow()` 恢复
+- 监听系统 `windowRectChange`，自由窗口发生变化后同步保存真实展开位置与尺寸
 - 窄纸片按宽度自动隐藏低优先级顶栏按钮，并通过 `⋯` 操作条保留完整入口
 - 标题最多 20 个字符
+
+窗口几何统一使用逻辑 `vp` 保存；只有在调用 `Window.moveWindowTo()` / `resize()` 等系统窗口 API 时才转换为物理 `px`，避免 ArkUI 手势偏移与 Window API 单位混用。
 
 ### 胶囊
 
 展开纸片和胶囊不再共用一套 `x / y`：
 
-- 展开态保存 `expandedX / expandedY / expandedWidth / expandedHeight`
-- 胶囊保存独立 `capsuleX / capsuleY`
+- 展开态保存 `expandedX / expandedY / expandedWidth / expandedHeight`，单位为 `vp`
+- 普通悬浮胶囊保存独立 `capsuleX / capsuleY`，单位为 `vp`
 - 贴边状态保存 `edgeOrder / edgeSide / edgeDisplayId`
+- 贴边 X / Y 由当前屏幕与队列实时派生，不作为持久化真值
 - 拖动胶囊不会覆盖纸片展开位置
-- 108 × 46 胶囊尺寸
+- 108 × 46 `vp` 胶囊尺寸，Window API 边界按 `densityPixels` 转成 px
+- `PaperAbility` 声明 `minWindowWidth: 108` / `minWindowHeight: 46`
 - 折叠 / 展开
 - 自动排列在屏幕右上区域
 - 右侧半隐藏
-- Hover 滑出
+- Hover 滑出约 110ms，离开约 130ms 收回
+- 快速反向从当前 X 直接反向，不等待上一动画结束
+- 动画窗口移动采用单飞 + 合并，只保留最新目标帧，避免异步调用积压
 - 点击恢复纸片
 - 普通悬浮胶囊可独立保存位置
 - 贴边胶囊纵向拖动按队列顺序重排
+- 折叠 / 展开和贴边模式变化会广播队列 revision，让其他胶囊及时补位
 - 全局胶囊开关
 - 自动贴边开关
 - 关闭胶囊模式时，已打开胶囊会实时恢复为原展开几何
@@ -128,6 +138,8 @@ HarmonyOS 没有 Windows 传统托盘，因此当前使用轻量“纸片控制�
 - 新建纸片使用来源位置，而不是永远固定左上角
 - 窄窗口顶栏按优先级收缩，不继续横向堆按钮
 - 对纸片数量、标题、Todo 粘贴和 Note 内容设置安全上限
+- 未知 / 已删除 paper ID 的迟到更新不会重新创建纸片
+- 手动恢复 backup 先验证，再关闭旧窗口并切换状态
 - 普通 PR 必须同时通过 Build 与 Package
 
 暂时不下放多屏左右边缘多队列、主胶囊、Windows 全屏避让、图片、文件快启和脚本胶囊。这些要么复杂度较高，要么高度依赖 HarmonyOS PC 实际窗口管理行为。
@@ -145,6 +157,7 @@ HarmonyOS 没有 Windows 传统托盘，因此当前使用轻量“纸片控制�
 - Todo 拖到专用删除区
 - zh / en / ja / ko 完整本地化
 - 复杂 Markdown inline 样式的 1:1 渲染
+- phone / tablet 形态：移动端应单独设计卡片 / 服务组件，而不是直接复制 PC 独立窗口胶囊
 
 尤其需要注意：`WINDOW_TOPMOST`、无边框、自由窗口尺寸、极小胶囊窗口、贴边与 Hover 的代码路径已经通过 API 23 云端真实编译，但这些是窗口管理器的运行时行为，必须在 HarmonyOS PC / 2in1 真机上最终验收。
 
@@ -182,6 +195,9 @@ PaperTodo-HarmonyOS/
 │     │  ├─ common/
 │     │  │  ├─ Models.ets
 │     │  │  ├─ PaperStore.ets
+│     │  │  ├─ WindowGeometry.ets
+│     │  │  ├─ CapsuleGeometry.ets
+│     │  │  ├─ CapsuleMotion.ets
 │     │  │  └─ MarkdownLite.ets
 │     │  └─ pages/
 │     │     ├─ Index.ets
@@ -199,7 +215,7 @@ PaperTodo-HarmonyOS/
 
 优先顺序：
 
-1. HarmonyOS PC / 2in1 真机验证多窗口、Topmost、最小窗口尺寸与焦点行为
+1. HarmonyOS PC / 2in1 真机验证多窗口、Topmost、最小窗口尺寸、焦点行为与控制中心最小化 / 恢复
 2. 按真机结果校准胶囊贴边几何和 Hover 动画
 3. 补 Todo 键盘操作与撤销 / 重做
 4. 补完整本地化
