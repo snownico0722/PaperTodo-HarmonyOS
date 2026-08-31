@@ -75,11 +75,7 @@ jobs:
           }
 
           const now = Math.floor(Date.now() / 1000);
-          const header = {
-            kid: account.key_id,
-            typ: 'JWT',
-            alg: 'PS256'
-          };
+          const header = { kid: account.key_id, typ: 'JWT', alg: 'PS256' };
           const payload = {
             iss: account.sub_account,
             aud: account.token_uri,
@@ -102,9 +98,29 @@ jobs:
 
           echo "::add-mask::$JWT"
 
-          TMP_BODY="$(mktemp)"
-          HTTP_STATUS="$(curl --silent --show-error \
-            --output "$TMP_BODY" \
+          # First verify that the Service Account JWT itself is accepted by Connect API.
+          PROJECT_BODY="$(mktemp)"
+          PROJECT_STATUS="$(curl --silent --show-error \
+            --output "$PROJECT_BODY" \
+            --write-out '%{http_code}' \
+            --request GET \
+            --header "Authorization: Bearer $JWT" \
+            --header 'Content-Type: application/json' \
+            'https://connect-api.cloud.huawei.com/api/project-service/v1/projects')"
+
+          if [[ "$PROJECT_STATUS" != '200' ]]; then
+            echo "AGC Service Account JWT was rejected by Project Management API with HTTP $PROJECT_STATUS." >&2
+            rm -f "$PROJECT_BODY"
+            echo 'AGC_PROVISIONING_AVAILABLE=false' >> "$GITHUB_ENV"
+            exit 0
+          fi
+          rm -f "$PROJECT_BODY"
+          echo 'AGC Service Account JWT accepted by Project Management API.'
+
+          # Then verify the app-scoped certificate/Profile permission separately.
+          PROFILE_BODY="$(mktemp)"
+          PROFILE_STATUS="$(curl --silent --show-error \
+            --output "$PROFILE_BODY" \
             --write-out '%{http_code}' \
             --request GET \
             --header "Authorization: Bearer $JWT" \
@@ -112,11 +128,11 @@ jobs:
             --header 'Content-Type: application/json' \
             'https://connect-api.cloud.huawei.com/api/publish/v3/provision/list?fromRecCount=1&maxReqCount=10')"
 
-          PROFILE_RESPONSE="$(cat "$TMP_BODY")"
-          rm -f "$TMP_BODY"
+          PROFILE_RESPONSE="$(cat "$PROFILE_BODY")"
+          rm -f "$PROFILE_BODY"
 
-          if [[ "$HTTP_STATUS" != '200' ]]; then
-            echo "AGC Service Account probe failed with HTTP $HTTP_STATUS; unsigned release build will continue." >&2
+          if [[ "$PROFILE_STATUS" != '200' ]]; then
+            echo "AGC Service Account JWT is valid, but Provisioning API returned HTTP $PROFILE_STATUS." >&2
             if jq -e . >/dev/null 2>&1 <<<"$PROFILE_RESPONSE"; then
               jq '{ret: (.ret // null), code: (.code // null), message: (.message // .msg // null)}' \
                 <<<"$PROFILE_RESPONSE" >&2
@@ -133,7 +149,7 @@ jobs:
           fi
 
           TOTAL_COUNT="$(jq -r '.totalCount // 0' <<<"$PROFILE_RESPONSE")"
-          echo "AGC Service Account authentication succeeded; visible profiles: $TOTAL_COUNT"
+          echo "AGC Provisioning API authentication succeeded; visible profiles: $TOTAL_COUNT"
           echo 'AGC_PROVISIONING_AVAILABLE=true' >> "$GITHUB_ENV"
 
       - name: Cache HarmonyOS Command Line Tools
