@@ -85,8 +85,6 @@ struct Paper {
   @State statusMessage: string = '';
 
   private paper: PaperData | null = null;
-  // All persisted and gesture geometry below is logical vp. Conversion happens only
-  // immediately before calling Window APIs, which use physical px.
   private moveBaseX: number = 0;
   private moveBaseY: number = 0;
   private moveCurrentX: number = 0;
@@ -512,6 +510,10 @@ struct Paper {
   }
 
   private updateMove(event: GestureEvent): void {
+    const paper: PaperData | null = this.paper;
+    if (paper === null) {
+      return;
+    }
     const win: window.Window | undefined = this.currentWindow();
     if (win === undefined) {
       return;
@@ -554,12 +556,12 @@ struct Paper {
       this.moveCurrentX = this.clamp(
         this.moveCurrentX,
         0,
-        Math.max(0, geometry.screenWidthVp - this.paper.expandedWidth)
+        Math.max(0, geometry.screenWidthVp - paper.expandedWidth)
       );
       this.moveCurrentY = this.clamp(
         this.moveCurrentY,
         0,
-        Math.max(0, geometry.screenHeightVp - this.paper.expandedHeight)
+        Math.max(0, geometry.screenHeightVp - paper.expandedHeight)
       );
       this.safeMoveVp(win, this.moveCurrentX, this.moveCurrentY, geometry);
     }
