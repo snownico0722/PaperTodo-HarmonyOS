@@ -57,6 +57,8 @@
         "supportWindowMode": [
           "floating"
         ],
+        "minWindowWidth": 108,
+        "minWindowHeight": 46,
         "exported": false
       }
     ]
