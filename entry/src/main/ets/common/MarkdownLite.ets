@@ -72,7 +72,7 @@ export function parseMarkdownLines(content: string, mode: string): MarkdownLine[
       continue;
     }
 
-    if (trimmed === '---' || trimmed === '***' || trimmed === '___') {
+    if (isHorizontalRule(trimmed)) {
       result.push({ id: 'line_' + i, kind: MD_KIND_RULE, text: '', level: 0, spans: [] });
       continue;
     }
@@ -201,8 +201,38 @@ function parseStyledText(text: string, inherited: InlineStyle): MarkdownInlineSp
       continue;
     }
 
+    if (text.startsWith('***', i)) {
+      const end: number = text.indexOf('***', i + 3);
+      if (end > i + 3) {
+        flushPlain();
+        appendSpans(result, parseStyledText(text.substring(i + 3, end), withBoldItalic(inherited)));
+        i = end + 3;
+        continue;
+      }
+    }
+
+    if (text.startsWith('___', i)) {
+      const end: number = text.indexOf('___', i + 3);
+      if (end > i + 3) {
+        flushPlain();
+        appendSpans(result, parseStyledText(text.substring(i + 3, end), withBoldItalic(inherited)));
+        i = end + 3;
+        continue;
+      }
+    }
+
     if (text.startsWith('**', i)) {
       const end: number = text.indexOf('**', i + 2);
+      if (end > i + 2) {
+        flushPlain();
+        appendSpans(result, parseStyledText(text.substring(i + 2, end), withBold(inherited)));
+        i = end + 2;
+        continue;
+      }
+    }
+
+    if (text.startsWith('__', i)) {
+      const end: number = text.indexOf('__', i + 2);
       if (end > i + 2) {
         flushPlain();
         appendSpans(result, parseStyledText(text.substring(i + 2, end), withBold(inherited)));
@@ -526,6 +556,13 @@ function withItalic(style: InlineStyle): InlineStyle {
   return result;
 }
 
+function withBoldItalic(style: InlineStyle): InlineStyle {
+  const result: InlineStyle = copyStyle(style);
+  result.bold = true;
+  result.italic = true;
+  return result;
+}
+
 function withStrike(style: InlineStyle): InlineStyle {
   const result: InlineStyle = copyStyle(style);
   result.strike = true;
@@ -562,6 +599,22 @@ function getHeadingLevel(line: string): number {
   return level;
 }
 
+function isHorizontalRule(trimmed: string): boolean {
+  if (trimmed.length < 3) {
+    return false;
+  }
+  const marker: string = trimmed.charAt(0);
+  if (marker !== '-' && marker !== '*' && marker !== '_') {
+    return false;
+  }
+  for (let i: number = 1; i < trimmed.length; i++) {
+    if (trimmed.charAt(i) !== marker) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function isBullet(trimmed: string): boolean {
   return trimmed.startsWith('- ') || trimmed.startsWith('* ') || trimmed.startsWith('+ ');
 }
@@ -580,7 +633,7 @@ function getOrderedPrefixLength(trimmed: string): number {
   }
   const marker: string = trimmed.charAt(i);
   const space: string = trimmed.charAt(i + 1);
-  if ((marker === '.' || marker === '、') && space === ' ') {
+  if ((marker === '.' || marker === ')' || marker === '、') && space === ' ') {
     return i + 2;
   }
   return 0;
