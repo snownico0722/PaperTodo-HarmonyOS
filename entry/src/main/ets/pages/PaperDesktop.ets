@@ -83,7 +83,6 @@ struct PaperDesktop {
   @State title: string = '';
   @State items: PaperItem[] = [];
   @State content: string = '';
-  @State draft: string = '';
   @State isNoteBrowsing: boolean = true;
   @State alwaysOnTop: boolean = false;
   @State isCollapsed: boolean = false;
@@ -96,6 +95,7 @@ struct PaperDesktop {
   @State todoDragDeleteArmed: boolean = false;
   @State todoHistoryRevision: number = 0;
   @State editingTitle: boolean = false;
+  @State todoContextItemId: string = '';
 
   private paper: PaperData | null = null;
   private moveBaseX: number = 0;
@@ -111,6 +111,10 @@ struct PaperDesktop {
   private todoDragCurrentIndex: number = -1;
   private todoDragHistoryRecorded: boolean = false;
   private todoHistory: TodoHistory = new TodoHistory();
+  private todoEditingId: string = '';
+  private todoEditSnapshot: PaperItem[] | null = null;
+  private todoSelectionStart: Map<string, number> = new Map<string, number>();
+  private todoSelectionEnd: Map<string, number> = new Map<string, number>();
   private noteController: TextAreaController = new TextAreaController();
   private capsuleMotion: CapsuleMotion = new CapsuleMotion();
   private capsuleHovered: boolean = false;
@@ -123,6 +127,7 @@ struct PaperDesktop {
   }
 
   aboutToDisappear(): void {
+    this.commitTodoEditSession();
     this.capsuleMotion.stop();
     PaperStore.flushNow();
   }
@@ -684,12 +689,60 @@ struct PaperDesktop {
     );
   }
 
+  private todoItemsEqual(left: PaperItem[], right: PaperItem[]): boolean {
+    if (left.length !== right.length) {
+      return false;
+    }
+    for (let i: number = 0; i < left.length; i++) {
+      if (left[i].id !== right[i].id ||
+        left[i].text !== right[i].text ||
+        left[i].done !== right[i].done ||
+        left[i].order !== right[i].order ||
+        left[i].linkedNoteId !== right[i].linkedNoteId) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private beginTodoEdit(id: string): void {
+    if (this.todoEditingId === id) {
+      return;
+    }
+    this.commitTodoEditSession();
+    this.todoEditingId = id;
+    this.todoEditSnapshot = cloneTodoItems(this.items);
+  }
+
+  private endTodoEdit(id: string): void {
+    if (this.todoEditingId === id) {
+      this.commitTodoEditSession();
+    }
+  }
+
+  private commitTodoEditSession(): void {
+    if (this.todoEditingId.length === 0 || this.todoEditSnapshot === null) {
+      this.todoEditingId = '';
+      this.todoEditSnapshot = null;
+      return;
+    }
+    const snapshot: PaperItem[] = this.todoEditSnapshot;
+    this.todoEditingId = '';
+    this.todoEditSnapshot = null;
+    if (!this.todoItemsEqual(snapshot, this.items)) {
+      this.todoHistory.record(snapshot);
+      this.todoHistoryRevision += 1;
+    }
+  }
+
   private recordTodoHistory(): void {
+    this.commitTodoEditSession();
     this.todoHistory.record(this.items);
     this.todoHistoryRevision += 1;
   }
 
   private undoTodo(): void {
+    this.commitTodoEditSession();
     const previous: PaperItem[] | null = this.todoHistory.undo(this.items);
     if (previous === null) {
       this.statusMessage = '没有可撤销的待办操作';
@@ -702,6 +755,7 @@ struct PaperDesktop {
   }
 
   private redoTodo(): void {
+    this.commitTodoEditSession();
     const next: PaperItem[] | null = this.todoHistory.redo(this.items);
     if (next === null) {
       this.statusMessage = '没有可重做的待办操作';
@@ -810,6 +864,73 @@ struct PaperDesktop {
     this.savePaper(false);
   }
 
+  private updateTodoSelection(id: string, start: number, end: number): void {
+    this.todoSelectionStart.set(id, start);
+    this.todoSelectionEnd.set(id, end);
+  }
+
+  private handleTodoPaste(id: string, pasteValue: string): boolean {
+    if (pasteValue.length === 0) {
+      return false;
+    }
+    const sourceLines: string[] = pasteValue.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+    const lines: string[] = [];
+    for (let i: number = 0; i < sourceLines.length && lines.length < TODO_PASTE_MAX_ITEMS; i++) {
+      const cleaned: string = this.cleanTodoPrefix(sourceLines[i]).trim().slice(0, TODO_ITEM_MAX_LENGTH);
+      if (cleaned.length > 0) {
+        lines.push(cleaned);
+      }
+    }
+    if (lines.length <= 1) {
+      return false;
+    }
+    const index: number = this.indexOfTodo(id);
+    if (index < 0) {
+      return false;
+    }
+    if (sourceLines.length > TODO_PASTE_MAX_ITEMS) {
+      this.statusMessage = '单次最多粘贴 ' + TODO_PASTE_MAX_ITEMS.toString() + ' 条待办';
+    }
+
+    const originalText: string = this.items[index].text;
+    const storedStart: number | undefined = this.todoSelectionStart.get(id);
+    const storedEnd: number | undefined = this.todoSelectionEnd.get(id);
+    const selectionStart: number = this.clamp(
+      storedStart === undefined ? originalText.length : storedStart,
+      0,
+      originalText.length
+    );
+    const selectionEnd: number = this.clamp(
+      storedEnd === undefined ? selectionStart : storedEnd,
+      selectionStart,
+      originalText.length
+    );
+    const prefix: string = originalText.substring(0, selectionStart);
+    const suffix: string = originalText.substring(selectionEnd);
+    const pasted: string[] = lines.slice();
+    pasted[0] = (prefix + pasted[0]).slice(0, TODO_ITEM_MAX_LENGTH);
+    const lastIndex: number = pasted.length - 1;
+    pasted[lastIndex] = (pasted[lastIndex] + suffix).slice(0, TODO_ITEM_MAX_LENGTH);
+
+    this.recordTodoHistory();
+    const next: PaperItem[] = cloneTodoItems(this.items);
+    next[index].text = pasted[0];
+    let focusId: string = id;
+    for (let i: number = 1; i < pasted.length; i++) {
+      const created: PaperItem = PaperStore.createTodoItem(pasted[i], index + i);
+      next.splice(index + i, 0, created);
+      focusId = created.id;
+    }
+    this.items = this.renumberItems(next);
+    this.todoSelectionStart.delete(id);
+    this.todoSelectionEnd.delete(id);
+    this.savePaper(false);
+    setTimeout((): void => {
+      this.getUIContext().getFocusController().requestFocus('todo-input-' + focusId);
+    }, 20);
+    return true;
+  }
+
   private deleteTodo(id: string): void {
     if (this.indexOfTodo(id) < 0) {
       return;
@@ -865,6 +986,18 @@ struct PaperDesktop {
         next.push(created);
       }
     }
+    this.items = this.renumberItems(next);
+    this.savePaper(false);
+    setTimeout((): void => {
+      this.getUIContext().getFocusController().requestFocus('todo-input-' + created.id);
+    }, 20);
+  }
+
+  private appendBlankTodo(): void {
+    this.recordTodoHistory();
+    const created: PaperItem = PaperStore.createTodoItem('', this.items.length);
+    const next: PaperItem[] = cloneTodoItems(this.items);
+    next.push(created);
     this.items = this.renumberItems(next);
     this.savePaper(false);
     setTimeout((): void => {
@@ -972,33 +1105,6 @@ struct PaperDesktop {
     return next;
   }
 
-  private addDraftTodos(): void {
-    const raw: string = this.draft.replace(/\r\n/g, '\n');
-    const lines: string[] = raw.split('\n');
-    const additions: string[] = [];
-    for (let i: number = 0; i < lines.length && additions.length < TODO_PASTE_MAX_ITEMS; i++) {
-      const cleaned: string = this.cleanTodoPrefix(lines[i]).trim().slice(0, TODO_ITEM_MAX_LENGTH);
-      if (cleaned.length > 0) {
-        additions.push(cleaned);
-      }
-    }
-    if (additions.length === 0 && raw.trim().length !== 0) {
-      return;
-    }
-    this.recordTodoHistory();
-    const next: PaperItem[] = cloneTodoItems(this.items);
-    if (additions.length === 0) {
-      next.push(PaperStore.createTodoItem('', next.length));
-    } else {
-      for (let i: number = 0; i < additions.length; i++) {
-        next.push(PaperStore.createTodoItem(additions[i], next.length));
-      }
-    }
-    this.items = this.renumberItems(next);
-    this.draft = '';
-    this.savePaper(false);
-  }
-
   private cleanTodoPrefix(text: string): string {
     let result: string = text.trim();
     result = result.replace(/^[-*+]\s+/, '');
@@ -1097,6 +1203,40 @@ struct PaperDesktop {
       PaperStore.setPaperVisible(note.id, true);
     }
     this.startPaper(note.id);
+  }
+
+  private contextTodo(): PaperItem | null {
+    const index: number = this.indexOfTodo(this.todoContextItemId);
+    return index >= 0 ? this.items[index] : null;
+  }
+
+  private contextTodoHasLinkedNote(): boolean {
+    const item: PaperItem | null = this.contextTodo();
+    return item !== null && this.linkedNote(item) !== null;
+  }
+
+  private focusTodoForContextMenu(id: string): void {
+    this.todoContextItemId = id;
+    this.getUIContext().getFocusController().requestFocus('todo-input-' + id);
+  }
+
+  private openContextLinkedNote(): void {
+    const item: PaperItem | null = this.contextTodo();
+    if (item !== null) {
+      this.activateLinkedNote(item);
+    }
+  }
+
+  private unlinkContextTodoNote(): void {
+    if (this.todoContextItemId.length > 0) {
+      this.setTodoNoteLink(this.todoContextItemId);
+    }
+  }
+
+  private deleteContextTodo(): void {
+    if (this.todoContextItemId.length > 0) {
+      this.deleteTodo(this.todoContextItemId);
+    }
   }
 
   private updateNote(value: string): void {
@@ -1409,6 +1549,23 @@ struct PaperDesktop {
   }
 
   @Builder
+  private TodoContextMenu() {
+    Menu() {
+      if (this.contextTodoHasLinkedNote()) {
+        MenuItem({ content: '打开关联笔记' })
+          .onClick((): void => this.openContextLinkedNote())
+        MenuItem({ content: '取消关联' })
+          .onClick((): void => this.unlinkContextTodoNote())
+      }
+      MenuItem({ content: '删除待办' })
+        .onClick((): void => this.deleteContextTodo())
+      MenuItem({ content: '清除已完成' })
+        .onClick((): void => this.clearCompleted())
+    }
+    .width(160)
+  }
+
+  @Builder
   private TodoBottomArea() {
     if (this.todoDragging) {
       Row() {
@@ -1424,28 +1581,20 @@ struct PaperDesktop {
       .borderRadius(8)
       .margin({ left: 8, right: 8, bottom: 8 })
     } else {
-      Row({ space: 6 }) {
-        TextInput({ text: this.draft, placeholder: '添加待办；可粘贴多行' })
-          .layoutWeight(1)
-          .height(38)
-          .fontSize(13)
-          .fontColor(this.textColor())
-          .placeholderColor(this.mutedColor())
-          .backgroundColor(this.inputColor())
-          .border({ width: 1, color: this.paperBorderColor() })
-          .borderRadius(8)
-          .onChange((value: string): void => {
-            this.draft = value;
-          })
-          .onSubmit((): void => this.addDraftTodos())
-        Button('+')
-          .width(38)
-          .height(38)
-          .fontSize(18)
-          .onClick((): void => this.addDraftTodos())
+      Row() {
+        Text('＋')
+          .fontSize(22)
+          .fontColor(this.mutedColor())
+          .opacity(0.48)
       }
       .width('100%')
-      .padding({ left: 8, right: 8, bottom: 8 })
+      .height(42)
+      .justifyContent(FlexAlign.Center)
+      .backgroundColor(this.inputColor())
+      .border({ width: 1, color: this.paperBorderColor() })
+      .borderRadius(8)
+      .margin({ left: 8, right: 8, bottom: 8 })
+      .onClick((): void => this.appendBlankTodo())
     }
   }
 
@@ -1492,6 +1641,15 @@ struct PaperDesktop {
                   color: this.mutedColor()
                 })
                 .onChange((value: string): void => this.updateTodoText(item.id, value))
+                .onEditChange((isEditing: boolean): void => {
+                  if (isEditing) {
+                    this.beginTodoEdit(item.id);
+                  } else {
+                    this.endTodoEdit(item.id);
+                  }
+                })
+                .onTextSelectionChange((start: number, end: number): void => this.updateTodoSelection(item.id, start, end))
+                .onPaste((pasteValue: string): boolean => this.handleTodoPaste(item.id, pasteValue))
                 .onSubmit((): void => this.insertTodoAfter(item.id))
                 .onKeyEvent((event?: KeyEvent): void => this.handleTodoKey(item.id, event))
 
@@ -1541,6 +1699,14 @@ struct PaperDesktop {
             .height(this.todoRowHeight())
             .padding({ left: 8, right: 4 })
             .opacity(item.done ? 0.62 : 1)
+            .onMouse((event?: MouseEvent): void => {
+              if (event !== undefined && event.button === MouseButton.Right && event.action === MouseAction.Press) {
+                this.focusTodoForContextMenu(item.id);
+              }
+            })
+            .bindContextMenu(this.TodoContextMenu, ResponseType.RightClick, {
+              placement: Placement.BottomLeft
+            })
           }
         }, (item: PaperItem): string => item.id)
       }
