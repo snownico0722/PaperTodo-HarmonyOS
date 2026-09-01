@@ -17,6 +17,10 @@ import {
   MARKDOWN_ENHANCED,
   MARKDOWN_OFF,
   NOTE_MAX_LENGTH,
+  NOTE_ZOOM_DEFAULT,
+  NOTE_ZOOM_MAX,
+  NOTE_ZOOM_MIN,
+  NOTE_ZOOM_STEP,
   PAPER_MIN_HEIGHT,
   PAPER_MIN_WIDTH,
   PAPER_TYPE_NOTE,
@@ -96,6 +100,7 @@ struct PaperDesktop {
   @State todoHistoryRevision: number = 0;
   @State editingTitle: boolean = false;
   @State todoContextItemId: string = '';
+  @State noteZoom: number = NOTE_ZOOM_DEFAULT;
 
   private paper: PaperData | null = null;
   private moveBaseX: number = 0;
@@ -116,6 +121,7 @@ struct PaperDesktop {
   private todoSelectionStart: Map<string, number> = new Map<string, number>();
   private todoSelectionEnd: Map<string, number> = new Map<string, number>();
   private noteController: TextAreaController = new TextAreaController();
+  private noteZoomGestureBase: number = NOTE_ZOOM_DEFAULT;
   private capsuleMotion: CapsuleMotion = new CapsuleMotion();
   private capsuleHovered: boolean = false;
   private capsuleDragging: boolean = false;
@@ -141,6 +147,7 @@ struct PaperDesktop {
     this.title = loaded.title;
     this.items = cloneTodoItems(loaded.items);
     this.content = loaded.content;
+    this.noteZoom = this.normalizeNoteZoom(loaded.textZoom);
     this.alwaysOnTop = loaded.alwaysOnTop;
     this.isCollapsed = loaded.isCollapsed && this.useCapsuleMode;
     this.windowWidthVp = loaded.expandedWidth;
@@ -160,6 +167,9 @@ struct PaperDesktop {
     this.paper = latest;
     this.alwaysOnTop = latest.alwaysOnTop;
     this.isCollapsed = latest.isCollapsed && this.useCapsuleMode;
+    if (latest.type === PAPER_TYPE_NOTE) {
+      this.noteZoom = this.normalizeNoteZoom(latest.textZoom);
+    }
     if (!this.editingTitle) {
       this.title = latest.title;
     }
@@ -198,6 +208,9 @@ struct PaperDesktop {
     this.paper.title = this.title.slice(0, TITLE_MAX_LENGTH);
     this.paper.items = cloneTodoItems(this.items);
     this.paper.content = this.content.slice(0, NOTE_MAX_LENGTH);
+    if (this.paper.type === PAPER_TYPE_NOTE) {
+      this.paper.textZoom = this.noteZoom;
+    }
     this.paper.alwaysOnTop = this.alwaysOnTop;
     this.paper.isCollapsed = this.isCollapsed;
     PaperStore.updatePaper(this.paper, immediate);
@@ -209,6 +222,10 @@ struct PaperDesktop {
 
   private hostContext(): common.UIAbilityContext {
     return this.getUIContext().getHostContext() as common.UIAbilityContext;
+  }
+
+  private localized(resource: Resource, ...args: Array<string | number>): string {
+    return this.hostContext().resourceManager.getStringSync(resource, ...args);
   }
 
   private displayGeometry(): DisplayGeometry {
@@ -256,17 +273,19 @@ struct PaperDesktop {
       return this.title.trim();
     }
     if (this.paper !== null && this.paper.type === PAPER_TYPE_NOTE) {
-      return '笔记';
+      return this.localized($r('app.string.paper_note'));
     }
     const unfinished: number = this.unfinishedCount();
-    return unfinished > 0 ? '待办 ' + unfinished.toString() : '待办';
+    return unfinished > 0 ? this.localized($r('app.string.paper_todo_count'), unfinished) :
+      this.localized($r('app.string.paper_todo'));
   }
 
   private headerTitle(): string {
     if (this.title.trim().length > 0) {
       return this.title.trim();
     }
-    return this.paper !== null && this.paper.type === PAPER_TYPE_NOTE ? '笔记' : '待办';
+    return this.localized(this.paper !== null && this.paper.type === PAPER_TYPE_NOTE ?
+      $r('app.string.paper_note') : $r('app.string.paper_todo'));
   }
 
   private typeLabel(): string {
@@ -378,7 +397,7 @@ struct PaperDesktop {
   private createPaper(type: string): void {
     const created: PaperData | null = PaperStore.createPaper(type, this.paperId);
     if (created === null) {
-      this.statusMessage = '无法新建纸片';
+      this.statusMessage = this.localized($r('app.string.status_create_paper_failed'));
       return;
     }
     this.startPaper(created.id);
@@ -395,7 +414,7 @@ struct PaperDesktop {
       }
     };
     this.hostContext().startAbility(want).catch((error: BusinessError): void => {
-      this.statusMessage = '打开纸片失败：' + error.message;
+      this.statusMessage = this.localized($r('app.string.status_open_paper_failed'), error.message);
     });
   }
 
@@ -745,12 +764,12 @@ struct PaperDesktop {
     this.commitTodoEditSession();
     const previous: PaperItem[] | null = this.todoHistory.undo(this.items);
     if (previous === null) {
-      this.statusMessage = '没有可撤销的待办操作';
+      this.statusMessage = this.localized($r('app.string.undo_none'));
       return;
     }
     this.items = this.renumberItems(previous);
     this.todoHistoryRevision += 1;
-    this.statusMessage = '已撤销';
+    this.statusMessage = this.localized($r('app.string.undo_done'));
     this.savePaper(false);
   }
 
@@ -758,12 +777,12 @@ struct PaperDesktop {
     this.commitTodoEditSession();
     const next: PaperItem[] | null = this.todoHistory.redo(this.items);
     if (next === null) {
-      this.statusMessage = '没有可重做的待办操作';
+      this.statusMessage = this.localized($r('app.string.redo_none'));
       return;
     }
     this.items = this.renumberItems(next);
     this.todoHistoryRevision += 1;
-    this.statusMessage = '已重做';
+    this.statusMessage = this.localized($r('app.string.redo_done'));
     this.savePaper(false);
   }
 
@@ -889,7 +908,7 @@ struct PaperDesktop {
       return false;
     }
     if (sourceLines.length > TODO_PASTE_MAX_ITEMS) {
-      this.statusMessage = '单次最多粘贴 ' + TODO_PASTE_MAX_ITEMS.toString() + ' 条待办';
+      this.statusMessage = this.localized($r('app.string.paste_limit'), TODO_PASTE_MAX_ITEMS);
     }
 
     const originalText: string = this.items[index].text;
@@ -1130,7 +1149,7 @@ struct PaperDesktop {
       return note.title.trim();
     }
     const firstLine: string = note.content.split('\n')[0].trim();
-    return firstLine.length > 0 ? firstLine.slice(0, 20) : '未命名笔记';
+    return firstLine.length > 0 ? firstLine.slice(0, 20) : this.localized($r('app.string.untitled_note'));
   }
 
   private linkedNote(item: PaperItem): PaperData | null {
@@ -1239,6 +1258,56 @@ struct PaperDesktop {
     }
   }
 
+  private normalizeNoteZoom(value?: number): number {
+    if (value === undefined || !Number.isFinite(value)) {
+      return NOTE_ZOOM_DEFAULT;
+    }
+    const clamped: number = this.clamp(value, NOTE_ZOOM_MIN, NOTE_ZOOM_MAX);
+    return Math.round(clamped / NOTE_ZOOM_STEP) * NOTE_ZOOM_STEP;
+  }
+
+  private setNoteZoom(value: number, persist: boolean = false): void {
+    const normalized: number = this.normalizeNoteZoom(value);
+    if (Math.abs(normalized - this.noteZoom) < 0.001) {
+      return;
+    }
+    this.noteZoom = normalized;
+    if (persist) {
+      this.savePaper(false);
+    }
+  }
+
+  private beginNoteZoom(): void {
+    this.noteZoomGestureBase = this.noteZoom;
+  }
+
+  private updateNoteZoom(event: GestureEvent): void {
+    if (this.paper === null || this.paper.type !== PAPER_TYPE_NOTE) {
+      return;
+    }
+    if (event.axisVertical !== 0) {
+      this.setNoteZoom(this.noteZoom + (event.axisVertical < 0 ? NOTE_ZOOM_STEP : -NOTE_ZOOM_STEP));
+      return;
+    }
+    if (Number.isFinite(event.scale) && event.scale > 0) {
+      this.setNoteZoom(this.noteZoomGestureBase * event.scale);
+    }
+  }
+
+  private endNoteZoom(): void {
+    if (this.paper !== null && this.paper.type === PAPER_TYPE_NOTE) {
+      this.savePaper(false);
+    }
+  }
+
+  private resetNoteZoom(): void {
+    this.setNoteZoom(NOTE_ZOOM_DEFAULT, true);
+  }
+
+  private noteFontSize(base: number): number {
+    return Math.round(base * this.noteZoom * 10) / 10;
+  }
+
   private updateNote(value: string): void {
     const limited: string = value.slice(0, NOTE_MAX_LENGTH);
     const result: NoteEditResult = this.applyMarkdownListContinuation(this.content, limited);
@@ -1330,7 +1399,8 @@ struct PaperDesktop {
   }
 
   private headingSize(level: number): number {
-    return level <= 1 ? 25 : (level === 2 ? 21 : (level === 3 ? 18 : 16));
+    const base: number = level <= 1 ? 25 : (level === 2 ? 21 : (level === 3 ? 18 : 16));
+    return this.noteFontSize(base);
   }
 
   private clamp(value: number, minValue: number, maxValue: number): number {
@@ -1377,7 +1447,8 @@ struct PaperDesktop {
       if (this.editingTitle) {
         TextInput({
           text: this.title,
-          placeholder: this.paper !== null && this.paper.type === PAPER_TYPE_NOTE ? '笔记' : '待办'
+          placeholder: this.paper !== null && this.paper.type === PAPER_TYPE_NOTE ?
+            $r('app.string.paper_note') : $r('app.string.paper_todo')
         })
           .id('paper-title-input')
           .layoutWeight(1)
@@ -1405,8 +1476,8 @@ struct PaperDesktop {
       }
 
       if (this.paper !== null && this.paper.type === PAPER_TYPE_NOTE) {
-        Button(this.isNoteBrowsing ? '编' : '览')
-          .width(28)
+        Button(this.isNoteBrowsing ? $r('app.string.note_edit_short') : $r('app.string.note_browse_short'))
+          .width(40)
           .height(30)
           .fontSize(10)
           .fontColor(this.textColor())
@@ -1432,8 +1503,8 @@ struct PaperDesktop {
         .backgroundColor(Color.Transparent)
         .onClick((): void => this.hidePaper())
 
-      Button(this.deleteConfirm ? '删' : '×')
-        .width(26)
+      Button(this.deleteConfirm ? $r('app.string.delete_short') : '×')
+        .width(this.deleteConfirm ? 36 : 26)
         .height(30)
         .fontSize(12)
         .fontColor(this.deleteConfirm ? '#B42318' : this.mutedColor())
@@ -1450,12 +1521,12 @@ struct PaperDesktop {
     Scroll() {
       Row({ space: 4 }) {
         if (this.paper !== null && this.paper.type === PAPER_TYPE_TODO) {
-          Button('↶ 撤销')
+          Button($r('app.string.action_undo'))
             .height(28)
             .fontSize(10)
             .opacity(this.todoHistory.canUndo() ? 1 : 0.4)
             .onClick((): void => this.undoTodo())
-          Button('↷ 重做')
+          Button($r('app.string.action_redo'))
             .height(28)
             .fontSize(10)
             .opacity(this.todoHistory.canRedo() ? 1 : 0.4)
@@ -1467,15 +1538,15 @@ struct PaperDesktop {
             .fontSize(10)
             .onClick((): void => this.cycleMarkdownMode())
         }
-        Button('主题')
+        Button($r('app.string.action_theme'))
           .height(28)
           .fontSize(10)
           .onClick((): void => this.cycleTheme())
-        Button('新待办')
+        Button($r('app.string.new_todo_short'))
           .height(28)
           .fontSize(10)
           .onClick((): void => this.createPaper(PAPER_TYPE_TODO))
-        Button('新笔记')
+        Button($r('app.string.new_note_short'))
           .height(28)
           .fontSize(10)
           .onClick((): void => this.createPaper(PAPER_TYPE_NOTE))
@@ -1492,12 +1563,12 @@ struct PaperDesktop {
   private LinkPicker() {
     Column({ space: 4 }) {
       Row() {
-        Text('关联笔记')
+        Text($r('app.string.link_picker_title'))
           .fontSize(11)
           .fontWeight(FontWeight.Medium)
           .fontColor(this.textColor())
         Blank()
-        Button('取消关联')
+        Button($r('app.string.unlink_note'))
           .height(26)
           .fontSize(9)
           .backgroundColor(Color.Transparent)
@@ -1516,11 +1587,11 @@ struct PaperDesktop {
 
       if (this.notePapers().length === 0) {
         Row() {
-          Text('还没有笔记纸')
+          Text($r('app.string.no_notes'))
             .fontSize(10)
             .fontColor(this.mutedColor())
           Blank()
-          Button('新建笔记')
+          Button($r('app.string.new_note_short'))
             .height(26)
             .fontSize(9)
             .onClick((): void => this.createPaper(PAPER_TYPE_NOTE))
@@ -1552,24 +1623,24 @@ struct PaperDesktop {
   private TodoContextMenu() {
     Menu() {
       if (this.contextTodoHasLinkedNote()) {
-        MenuItem({ content: '打开关联笔记' })
+        MenuItem({ content: $r('app.string.context_open_linked_note') })
           .onClick((): void => this.openContextLinkedNote())
-        MenuItem({ content: '取消关联' })
+        MenuItem({ content: $r('app.string.unlink_note') })
           .onClick((): void => this.unlinkContextTodoNote())
       }
-      MenuItem({ content: '删除待办' })
+      MenuItem({ content: $r('app.string.context_delete_todo') })
         .onClick((): void => this.deleteContextTodo())
-      MenuItem({ content: '清除已完成' })
+      MenuItem({ content: $r('app.string.clear_completed') })
         .onClick((): void => this.clearCompleted())
     }
-    .width(160)
+    .width(180)
   }
 
   @Builder
   private TodoBottomArea() {
     if (this.todoDragging) {
       Row() {
-        Text(this.todoDragDeleteArmed ? '松开删除' : '拖到这里删除')
+        Text(this.todoDragDeleteArmed ? $r('app.string.drag_release_delete') : $r('app.string.drag_to_delete'))
           .fontSize(12)
           .fontColor(this.todoDragDeleteArmed ? '#FFFFFF' : '#B42318')
       }
@@ -1606,7 +1677,7 @@ struct PaperDesktop {
           .fontSize(11)
           .fontColor(this.mutedColor())
         Blank()
-        Button('清已完成')
+        Button($r('app.string.clear_completed'))
           .height(28)
           .fontSize(10)
           .fontColor(this.mutedColor())
@@ -1627,7 +1698,7 @@ struct PaperDesktop {
                 .height(24)
                 .onChange((checked: boolean): void => this.setTodoDone(item.id, checked))
 
-              TextInput({ text: item.text, placeholder: '待办事项' })
+              TextInput({ text: item.text, placeholder: $r('app.string.todo_placeholder') })
                 .id('todo-input-' + item.id)
                 .layoutWeight(1)
                 .height(this.todoRowHeight() - 6)
@@ -1730,12 +1801,12 @@ struct PaperDesktop {
   @Builder
   private MarkdownToolbar() {
     Row({ space: 4 }) {
-      Button('B').onClick((): void => this.appendMarkdown('**文本**'))
-      Button('I').onClick((): void => this.appendMarkdown('*文本*'))
-      Button('H').onClick((): void => this.appendMarkdown('## 标题'))
-      Button('>').onClick((): void => this.appendMarkdown('> 引用'))
-      Button('•').onClick((): void => this.appendMarkdown('- 列表'))
-      Button('☐').onClick((): void => this.appendMarkdown('- [ ] 任务'))
+      Button('B').onClick((): void => this.appendMarkdown('**' + this.localized($r('app.string.md_sample_text')) + '**'))
+      Button('I').onClick((): void => this.appendMarkdown('*' + this.localized($r('app.string.md_sample_text')) + '*'))
+      Button('H').onClick((): void => this.appendMarkdown('## ' + this.localized($r('app.string.md_sample_heading'))))
+      Button('>').onClick((): void => this.appendMarkdown('> ' + this.localized($r('app.string.md_sample_quote'))))
+      Button('•').onClick((): void => this.appendMarkdown('- ' + this.localized($r('app.string.md_sample_list'))))
+      Button('☐').onClick((): void => this.appendMarkdown('- [ ] ' + this.localized($r('app.string.md_sample_task'))))
     }
     .width('100%')
     .height(34)
@@ -1747,10 +1818,10 @@ struct PaperDesktop {
     Column() {
       if (!this.isNoteBrowsing) {
         this.MarkdownToolbar()
-        TextArea({ text: this.content, placeholder: '写点什么…', controller: this.noteController })
+        TextArea({ text: this.content, placeholder: $r('app.string.note_placeholder'), controller: this.noteController })
           .layoutWeight(1)
           .width('100%')
-          .fontSize(14)
+          .fontSize(this.noteFontSize(14))
           .fontColor(this.textColor())
           .placeholderColor(this.mutedColor())
           .backgroundColor(Color.Transparent)
@@ -1758,9 +1829,9 @@ struct PaperDesktop {
           .onChange((value: string): void => this.updateNote(value))
       } else if (this.markdownRenderMode === MARKDOWN_OFF) {
         Scroll() {
-          Text(this.content.length > 0 ? this.content : '点击“编”开始记录')
+          Text(this.content.length > 0 ? this.content : this.localized($r('app.string.note_preview_hint')))
             .width('100%')
-            .fontSize(14)
+            .fontSize(this.noteFontSize(14))
             .fontColor(this.content.length > 0 ? this.textColor() : this.mutedColor())
             .padding(12)
         }
@@ -1782,19 +1853,19 @@ struct PaperDesktop {
               } else if (line.kind === MD_KIND_QUOTE) {
                 Text('│ ' + line.text)
                   .width('100%')
-                  .fontSize(14)
+                  .fontSize(this.noteFontSize(14))
                   .fontColor(this.mutedColor())
               } else if (line.kind === MD_KIND_CODE) {
                 Text(line.text)
                   .width('100%')
-                  .fontSize(13)
+                  .fontSize(this.noteFontSize(13))
                   .fontColor(this.textColor())
                   .backgroundColor(this.inputColor())
                   .padding(6)
               } else {
                 Text(line.text.length > 0 ? line.text : ' ')
                   .width('100%')
-                  .fontSize(14)
+                  .fontSize(this.noteFontSize(14))
                   .fontColor(this.textColor())
               }
             }, (line: MarkdownLine): string => line.id)
@@ -1810,11 +1881,27 @@ struct PaperDesktop {
     }
     .layoutWeight(1)
     .width('100%')
+    .gesture(
+      PinchGesture()
+        .onActionStart((): void => this.beginNoteZoom())
+        .onActionUpdate((event: GestureEvent): void => this.updateNoteZoom(event))
+        .onActionEnd((): void => this.endNoteZoom())
+        .onActionCancel((): void => this.endNoteZoom())
+    )
   }
 
   @Builder
   private ResizeHandle() {
     Row() {
+      if (this.paper !== null && this.paper.type === PAPER_TYPE_NOTE && Math.abs(this.noteZoom - NOTE_ZOOM_DEFAULT) > 0.001) {
+        Text(Math.round(this.noteZoom * 100).toString() + '%')
+          .height(24)
+          .fontSize(10)
+          .fontColor(this.mutedColor())
+          .opacity(0.68)
+          .padding({ left: 8, right: 8 })
+          .onClick((): void => this.resetNoteZoom())
+      }
       Blank()
       Text('◢')
         .width(28)
