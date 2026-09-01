@@ -1285,8 +1285,9 @@ struct PaperDesktop {
     if (this.paper === null || this.paper.type !== PAPER_TYPE_NOTE) {
       return;
     }
-    if (event.axisVertical !== 0) {
-      this.setNoteZoom(this.noteZoom + (event.axisVertical < 0 ? NOTE_ZOOM_STEP : -NOTE_ZOOM_STEP));
+    const axisVertical: number = event.axisVertical ?? 0;
+    if (axisVertical !== 0) {
+      this.setNoteZoom(this.noteZoom + (axisVertical < 0 ? NOTE_ZOOM_STEP : -NOTE_ZOOM_STEP));
       return;
     }
     if (Number.isFinite(event.scale) && event.scale > 0) {
