@@ -1964,16 +1964,21 @@ struct PaperDesktop {
                   this.quoteBorderColor()
                 )
               } else if (line.kind === MD_KIND_CODE) {
-                this.MarkdownInlineLine(
-                  line,
-                  this.noteFontSize(13),
-                  this.textColor(),
-                  FontWeight.Normal,
-                  '',
-                  this.textColor()
-                )
-                  .backgroundColor(this.inputColor())
-                  .padding(6)
+                Column() {
+                  this.MarkdownInlineLine(
+                    line,
+                    this.noteFontSize(13),
+                    this.textColor(),
+                    FontWeight.Normal,
+                    '',
+                    this.textColor()
+                  )
+                }
+                .width('100%')
+                .alignItems(HorizontalAlign.Start)
+                .backgroundColor(this.inputColor())
+                .padding(6)
+                .borderRadius(4)
               } else {
                 this.MarkdownInlineLine(
                   line,
