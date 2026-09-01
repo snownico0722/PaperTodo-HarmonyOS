@@ -1,6 +1,10 @@
 import { common, ConfigurationConstant, Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import {
+  COLOR_SCHEME_FOREST,
+  COLOR_SCHEME_INK,
+  COLOR_SCHEME_ROSE,
+  COLOR_SCHEME_WARM,
   MARKDOWN_BASIC,
   MARKDOWN_ENHANCED,
   MARKDOWN_OFF,
@@ -22,6 +26,7 @@ import { PaperStore } from '../common/PaperStore';
 @Component
 struct Index {
   @StorageLink('theme') theme: string = THEME_SYSTEM;
+  @StorageLink('colorScheme') colorScheme: string = COLOR_SCHEME_WARM;
   @StorageLink('markdownRenderMode') markdownRenderMode: string = MARKDOWN_ENHANCED;
   @StorageLink('useCapsuleMode') useCapsuleMode: boolean = true;
   @StorageLink('useDeepCapsuleMode') useDeepCapsuleMode: boolean = true;
@@ -211,6 +216,31 @@ struct Index {
       return this.localized($r('app.string.theme_dark'));
     }
     return this.localized($r('app.string.theme_system'));
+  }
+
+  private cycleColorScheme(): void {
+    if (this.colorScheme === COLOR_SCHEME_WARM) {
+      PaperStore.setColorScheme(COLOR_SCHEME_INK);
+    } else if (this.colorScheme === COLOR_SCHEME_INK) {
+      PaperStore.setColorScheme(COLOR_SCHEME_FOREST);
+    } else if (this.colorScheme === COLOR_SCHEME_FOREST) {
+      PaperStore.setColorScheme(COLOR_SCHEME_ROSE);
+    } else {
+      PaperStore.setColorScheme(COLOR_SCHEME_WARM);
+    }
+  }
+
+  private colorSchemeLabel(): string {
+    if (this.colorScheme === COLOR_SCHEME_INK) {
+      return this.localized($r('app.string.scheme_ink'));
+    }
+    if (this.colorScheme === COLOR_SCHEME_FOREST) {
+      return this.localized($r('app.string.scheme_forest'));
+    }
+    if (this.colorScheme === COLOR_SCHEME_ROSE) {
+      return this.localized($r('app.string.scheme_rose'));
+    }
+    return this.localized($r('app.string.scheme_warm'));
   }
 
   private cycleMarkdownMode(): void {
@@ -431,6 +461,7 @@ struct Index {
 
       Flex({ wrap: FlexWrap.Wrap }) {
         this.SettingButton($r('app.string.setting_theme', this.themeLabel()), (): void => this.cycleTheme())
+        this.SettingButton($r('app.string.setting_color_scheme', this.colorSchemeLabel()), (): void => this.cycleColorScheme())
         this.SettingButton($r('app.string.setting_markdown', this.markdownLabel()), (): void => this.cycleMarkdownMode())
         this.SettingButton($r('app.string.setting_todo_size', this.todoVisualSizeLabel()), (): void => this.cycleTodoVisualSize())
         this.SettingButton($r('app.string.setting_completed_bottom', this.stateLabel(this.autoBottomCompleted)),
