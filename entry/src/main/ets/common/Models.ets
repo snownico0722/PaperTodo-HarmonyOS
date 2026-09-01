@@ -36,6 +36,10 @@ export const TODO_PASTE_MAX_ITEMS: number = 200;
 export const TODO_ITEM_MAX_LENGTH: number = 5000;
 export const TODO_HISTORY_LIMIT: number = 100;
 export const NOTE_MAX_LENGTH: number = 200000;
+export const NOTE_ZOOM_DEFAULT: number = 1;
+export const NOTE_ZOOM_MIN: number = 0.5;
+export const NOTE_ZOOM_MAX: number = 1.5;
+export const NOTE_ZOOM_STEP: number = 0.1;
 
 export interface PaperItem {
   id: string;
@@ -70,6 +74,8 @@ export interface PaperData {
   isCollapsed: boolean;
   items: PaperItem[];
   content: string;
+  // Optional for backward-compatible v2.2 note zoom persistence. Missing values mean 100%.
+  textZoom?: number;
   createdAt: number;
   updatedAt: number;
 
