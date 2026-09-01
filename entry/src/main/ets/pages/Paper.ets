@@ -55,6 +55,11 @@ import {
 } from '../common/MarkdownLite';
 import { PaperStore } from '../common/PaperStore';
 import {
+  PAPER_LINK_UDMF_TYPE,
+  PaperLinkDragPayload,
+  parsePaperLinkDragRecord
+} from '../common/PaperLinkDrag';
+import {
   applyMarkdownBold,
   applyMarkdownCode,
   applyMarkdownItalic,
@@ -79,6 +84,12 @@ import {
 import { formatText, tForSystem } from '../common/Strings';
 import { ThemePalette, resolvePalette } from '../common/ThemePalette';
 import { TodoHistory, cloneTodoItems } from '../common/TodoHistory';
+import {
+  TODO_ITEM_UDMF_TYPE,
+  TodoItemDragPayload,
+  createTodoItemDragData,
+  parseTodoItemDragRecord
+} from '../common/TodoDrag';
 import { truncateText } from '../common/TextSafety';
 
 interface NoteInsertion {
@@ -152,6 +163,9 @@ struct Paper {
   @State brokenNoteImageIds: string[] = [];
   @State surfaceOpacity: number = 1;
   @State surfaceScale: number = 1;
+  @State todoDraggingId: string = '';
+  @State todoDropTargetId: string = '';
+  @State todoDeleteDropHovered: boolean = false;
 
   private paper: PaperData | null = null;
   private moveBaseX: number = 0;
@@ -188,11 +202,13 @@ struct Paper {
   aboutToAppear(): void {
     this.componentActive = true;
     this.imageImporting = false;
+    this.finishTodoItemDrag();
     this.reloadPaper();
   }
 
   aboutToDisappear(): void {
     this.componentActive = false;
+    this.finishTodoItemDrag();
     this.imageOperationGeneration += 1;
     this.surfaceTransitionGeneration += 1;
     this.cancelWindowMotion();
@@ -386,6 +402,10 @@ struct Paper {
 
   private accentColor(): string {
     return this.palette().accent;
+  }
+
+  private dangerColor(): string {
+    return this.palette().danger;
   }
 
   private scaledFontSize(base: number): number {
@@ -644,6 +664,9 @@ struct Paper {
   private applyCollapsedState(collapsed: boolean): void {
     if (this.paper === null) {
       return;
+    }
+    if (collapsed) {
+      this.finishTodoItemDrag();
     }
     this.isCollapsed = collapsed;
     this.paper.isCollapsed = collapsed;
@@ -1309,6 +1332,85 @@ struct Paper {
     this.savePaper(false);
   }
 
+  private todoIndexById(id: string): number {
+    for (let i: number = 0; i < this.items.length; i++) {
+      if (this.items[i].id === id) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  private beginTodoItemDrag(event: DragEvent, item: PaperItem): DragItemInfo {
+    const data: unifiedDataChannel.UnifiedData = createTodoItemDragData(this.paperId, item.id);
+    event.setData(data);
+    event.dragBehavior = DragBehavior.MOVE;
+    this.todoDraggingId = item.id;
+    this.todoDropTargetId = '';
+    this.todoDeleteDropHovered = false;
+    return { extraInfo: item.id };
+  }
+
+  private finishTodoItemDrag(): void {
+    this.todoDraggingId = '';
+    this.todoDropTargetId = '';
+    this.todoDeleteDropHovered = false;
+  }
+
+  private todoItemDragPayload(event: DragEvent): TodoItemDragPayload | null {
+    try {
+      const records: unifiedDataChannel.UnifiedRecord[] = event.getData().getRecords();
+      for (let i: number = 0; i < records.length; i++) {
+        const payload: TodoItemDragPayload | null = parseTodoItemDragRecord(records[i]);
+        if (payload !== null) {
+          return payload;
+        }
+      }
+    } catch (error) {
+      return null;
+    }
+    return null;
+  }
+
+  private handleTodoMoveDrop(event: DragEvent, targetId: string): boolean {
+    const payload: TodoItemDragPayload | null = this.todoItemDragPayload(event);
+    if (payload === null) {
+      return false;
+    }
+    const from: number = this.todoIndexById(payload.todoId);
+    const to: number = this.todoIndexById(targetId);
+    if (payload.paperId !== this.paperId || payload.todoId !== this.todoDraggingId || from < 0 || to < 0) {
+      event.setResult(DragResult.DRAG_FAILED);
+      this.finishTodoItemDrag();
+      return true;
+    }
+    event.setResult(DragResult.DRAG_SUCCESSFUL);
+    this.finishTodoItemDrag();
+    if (from !== to) {
+      this.moveTodo(from, to);
+    }
+    return true;
+  }
+
+  private handleTodoDeleteDrop(event: DragEvent): void {
+    try {
+      const payload: TodoItemDragPayload | null = this.todoItemDragPayload(event);
+      if (payload === null || payload.paperId !== this.paperId || payload.todoId !== this.todoDraggingId ||
+        this.todoIndexById(payload.todoId) < 0) {
+        event.setResult(DragResult.DRAG_FAILED);
+        this.finishTodoItemDrag();
+        return;
+      }
+      event.setResult(DragResult.DRAG_SUCCESSFUL);
+      this.finishTodoItemDrag();
+      this.deleteTodo(payload.todoId);
+      this.statusMessage = this.text('status.todoDragDeleted');
+    } catch (error) {
+      event.setResult(DragResult.DRAG_FAILED);
+      this.finishTodoItemDrag();
+    }
+  }
+
   private renumberItems(items: PaperItem[]): PaperItem[] {
     const next: PaperItem[] = [];
     for (let i: number = 0; i < items.length; i++) {
@@ -1583,6 +1685,45 @@ struct Paper {
     }
   }
 
+  private handleTodoAssociationDrop(event: DragEvent, itemId: string): void {
+    try {
+      if (this.handleTodoMoveDrop(event, itemId)) {
+        return;
+      }
+      const records: unifiedDataChannel.UnifiedRecord[] = event.getData().getRecords();
+      for (let i: number = 0; i < records.length; i++) {
+        const payload: PaperLinkDragPayload | null = parsePaperLinkDragRecord(records[i]);
+        if (payload === null) {
+          continue;
+        }
+        if (!this.enablePaperLinks) {
+          event.setResult(DragResult.DRAG_FAILED);
+          this.statusMessage = this.text('status.paperLinkDropDisabled');
+          return;
+        }
+        const target: PaperData | null = PaperStore.getPaper(payload.paperId);
+        if (target === null) {
+          event.setResult(DragResult.DRAG_FAILED);
+          this.statusMessage = this.text('status.linkedPaperMissing');
+          return;
+        }
+        if (target.id === this.paperId) {
+          event.setResult(DragResult.DRAG_FAILED);
+          this.statusMessage = this.text('status.paperLinkDropSelf');
+          return;
+        }
+        event.setResult(DragResult.DRAG_SUCCESSFUL);
+        this.setTodoLink(itemId, target.id);
+        this.statusMessage = this.formatted('status.paperLinkDropLinked', 'title', this.paperDisplayTitle(target));
+        return;
+      }
+      this.handleTodoQuickLaunchDrop(event, itemId);
+    } catch (error) {
+      event.setResult(DragResult.DRAG_FAILED);
+      this.statusMessage = this.text('status.quickLaunchDropUnsupported');
+    }
+  }
+
   private async persistQuickLaunchPermission(uri: string): Promise<void> {
     const policy: fileShare.PolicyInfo = {
       uri: uri,
@@ -1677,6 +1818,31 @@ struct Paper {
       this.statusMessage = this.formatted('status.quickLaunchOpenFailed', 'error', error.message);
       this.linkingTodoId = item.id;
     });
+  }
+
+  private async openQuickLaunchContainingFolder(item: PaperItem): Promise<void> {
+    if (item.quickLaunchUri === undefined || item.quickLaunchUri.length === 0) {
+      this.statusMessage = this.text('status.quickLaunchMissing');
+      this.linkingTodoId = item.id;
+      return;
+    }
+    try {
+      try {
+        await this.activateQuickLaunchPermission(item.quickLaunchUri);
+      } catch (error) {
+        // Keep trying: a provider may still retain the picker grant for this URI.
+      }
+      const directoryUri: string = new fileUri.FileUri(item.quickLaunchUri).getFullDirectoryUri();
+      const want: Want = {
+        action: 'ohos.want.action.viewData',
+        uri: directoryUri,
+        type: uniformTypeDescriptor.UniformDataType.DIRECTORY,
+        flags: wantConstant.Flags.FLAG_AUTH_READ_URI_PERMISSION
+      };
+      await this.hostContext().startAbility(want);
+    } catch (error) {
+      this.statusMessage = this.formatted('status.quickLaunchContainingFolderFailed', 'error', String(error));
+    }
   }
 
   private externalMarkdownFileName(): string {
@@ -2785,6 +2951,12 @@ struct Paper {
       })
         .onClick((): void => this.openTodoAssociation(item))
       if (this.hasTodoAssociation(item)) {
+        if (item.quickLaunchUri !== undefined) {
+          MenuItem({ content: this.text('action.openContainingFolder') })
+            .onClick((): void => {
+              this.openQuickLaunchContainingFolder(item);
+            })
+        }
         MenuItem({ content: this.text('action.changeAssociation') })
           .onClick((): void => {
             this.linkingTodoId = item.id;
@@ -2889,13 +3061,15 @@ struct Paper {
                   })
               }
 
-              if (this.layoutWidth >= 220) {
-                Text('≡')
-                  .width(22)
-                  .fontSize(15)
-                  .fontColor(this.mutedColor())
-                  .textAlign(TextAlign.Center)
-              }
+              Text('≡')
+                .width(22)
+                .height(30)
+                .fontSize(15)
+                .fontColor(this.mutedColor())
+                .textAlign(TextAlign.Center)
+                .draggable(true)
+                .onDragStart((event: DragEvent): DragItemInfo => this.beginTodoItemDrag(event, item))
+                .onDragEnd((): void => this.finishTodoItemDrag())
 
               Button('×')
                 .width(24)
@@ -2912,14 +3086,34 @@ struct Paper {
               .combine(TransitionEffect.scale({ x: 0.97, y: 0.97 }))
               .animation({ duration: this.enableAnimations ? 160 : 0, curve: Curve.EaseOut }))
             .animation({ duration: this.enableAnimations ? 160 : 0, curve: Curve.EaseOut })
+            .backgroundColor(this.todoDropTargetId === item.id ? this.inputColor() : Color.Transparent)
             .allowDrop([
+              TODO_ITEM_UDMF_TYPE,
+              PAPER_LINK_UDMF_TYPE,
               uniformTypeDescriptor.UniformDataType.FILE,
               uniformTypeDescriptor.UniformDataType.FOLDER,
               uniformTypeDescriptor.UniformDataType.DIRECTORY,
               uniformTypeDescriptor.UniformDataType.FILE_URI
             ])
-            .onDragMove((event: DragEvent): void => event.setResult(DragResult.DROP_ENABLED))
-            .onDrop((event: DragEvent): void => this.handleTodoQuickLaunchDrop(event, item.id))
+            .onDragEnter((event: DragEvent): void => {
+              if (this.todoDraggingId.length > 0 && this.todoDraggingId !== item.id) {
+                this.todoDropTargetId = item.id;
+              }
+              this.todoDeleteDropHovered = false;
+              event.dragBehavior = this.todoDraggingId.length > 0 ? DragBehavior.MOVE : DragBehavior.COPY;
+              event.setResult(DragResult.DROP_ENABLED);
+            })
+            .onDragMove((event: DragEvent): void => {
+              this.todoDeleteDropHovered = false;
+              event.dragBehavior = this.todoDraggingId.length > 0 ? DragBehavior.MOVE : DragBehavior.COPY;
+              event.setResult(DragResult.DROP_ENABLED);
+            })
+            .onDragLeave((): void => {
+              if (this.todoDropTargetId === item.id) {
+                this.todoDropTargetId = '';
+              }
+            })
+            .onDrop((event: DragEvent): void => this.handleTodoAssociationDrop(event, item.id))
             .bindMenu(this.keyboardMenuTodoId === item.id, () => {
               this.TodoContextMenu(item)
             }, {
@@ -2934,7 +3128,6 @@ struct Paper {
             }, ResponseType.RightClick)
           }
         }, (item: PaperItem): string => item.id)
-          .onMove((from: number, to: number): void => this.moveTodo(from, to))
       }
       .layoutWeight(1)
       .width('100%')
@@ -3162,6 +3355,50 @@ struct Paper {
   }
 
   @Builder
+  private TodoDeleteDropZone() {
+    Row({ space: 7 }) {
+      Text('⌫')
+        .fontSize(18)
+        .fontWeight(FontWeight.Bold)
+        .fontColor(this.todoDeleteDropHovered ? this.paperColor() : this.dangerColor())
+      Text(this.text('action.dropTodoToDelete'))
+        .fontSize(12)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(this.todoDeleteDropHovered ? this.paperColor() : this.dangerColor())
+    }
+    .justifyContent(FlexAlign.Center)
+    .width('94%')
+    .height(42)
+    .align(Alignment.Bottom)
+    .margin({ bottom: this.resizeGripMode === RESIZE_GRIP_HIDDEN ? 8 : 28 })
+    .backgroundColor(this.todoDeleteDropHovered ? this.dangerColor() : this.inputColor())
+    .border({ width: this.todoDeleteDropHovered ? 2 : 1, color: this.dangerColor() })
+    .borderRadius(11)
+    .shadow(this.todoDeleteDropHovered ? ShadowStyle.OUTER_DEFAULT_SM : ShadowStyle.OUTER_DEFAULT_XS)
+    .zIndex(40)
+    .transition(TransitionEffect.OPACITY
+      .combine(TransitionEffect.scale({ x: 0.96, y: 0.96 }))
+      .animation({ duration: this.enableAnimations ? 120 : 0, curve: Curve.EaseOut }))
+    .allowDrop([TODO_ITEM_UDMF_TYPE])
+    .onDragEnter((event: DragEvent): void => {
+      this.todoDropTargetId = '';
+      this.todoDeleteDropHovered = true;
+      event.dragBehavior = DragBehavior.MOVE;
+      event.setResult(DragResult.DROP_ENABLED);
+    })
+    .onDragMove((event: DragEvent): void => {
+      this.todoDropTargetId = '';
+      this.todoDeleteDropHovered = true;
+      event.dragBehavior = DragBehavior.MOVE;
+      event.setResult(DragResult.DROP_ENABLED);
+    })
+    .onDragLeave((): void => {
+      this.todoDeleteDropHovered = false;
+    })
+    .onDrop((event: DragEvent): void => this.handleTodoDeleteDrop(event))
+  }
+
+  @Builder
   private HorizontalResizeHitZone(direction: string, alignment: Alignment) {
     Row()
       .width('100%')
@@ -3379,6 +3616,10 @@ struct Paper {
         .bindContextMenu(() => {
           this.PaperContextMenu()
         }, ResponseType.RightClick)
+
+        if (this.paper !== null && this.paper.type === PAPER_TYPE_TODO && this.todoDraggingId.length > 0) {
+          this.TodoDeleteDropZone()
+        }
 
         if (this.resizeGripMode === RESIZE_GRIP_HIDDEN) {
           this.HorizontalResizeHitZone('top', Alignment.Top)

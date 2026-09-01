@@ -8,7 +8,7 @@ PaperTodo 的 HarmonyOS 原生版本，使用 ArkTS + ArkUI 重写。当前代�
 - HarmonyOS SDK `6.1.0(23)` / API 23
 - 工程声明支持 `phone` / `tablet` / `2in1`，自由窗口和桌面胶囊的主要验收场景是 PC / 2in1
 - GitHub Actions 已配置 unsigned HAP 编译和 unsigned APP 打包
-- ArkTS 逻辑测试覆盖 Markdown 块 / 行内解析、Note 选区编辑、Todo 撤销 / 重做快照、本地化目录、Unicode 安全截断和图片托管文件清理规则
+- ArkTS 逻辑测试覆盖 Markdown 块 / 行内解析、Note 选区编辑、Todo 撤销 / 重做快照、schema 归一化、本地化目录、Unicode 安全截断和图片托管文件清理规则
 - 多窗口、Topmost、极小窗口、Hover 和文件提供方行为仍需在目标设备上持续真机验证
 
 ## 3.3 对齐范围
@@ -57,7 +57,7 @@ PaperTodo 的 HarmonyOS 原生版本，使用 ArkTS + ArkUI 重写。当前代�
 ### Todo 纸
 
 - 完成 / 恢复、行内编辑、Enter 后插入、删除和清除已完成
-- List 原生拖动排序
+- 每行独立 `≡` 拖动柄：拖到其他 Todo 行排序，拖到纸片底部浮出的删除区删除；排序和删除共用 UDMF MOVE 载荷，避免两套拖拽手势竞争
 - 底部快速添加；多行文本自动拆分为多项
 - 清理常见列表符号、数字序号、Markdown checkbox 和 `☐ / ☑ / ✓` 前缀
 - 单次多行添加最多 200 项，单项最多 2000 个 UTF-16 代码单元
@@ -66,8 +66,8 @@ PaperTodo 的 HarmonyOS 原生版本，使用 ArkTS + ArkUI 重写。当前代�
 - 窗口内 100 步整表撤销 / 重做，连续文字编辑在约 800 ms 内合并并提供工具栏按钮；输入框内的 `Ctrl+Z` / `Ctrl+Y` 保留给系统原生逐字段撤销
 - 新增行后自动聚焦，删除后聚焦相邻项，双击文本可全选；每项均有右键菜单，也可用菜单键 / `Shift+F10` 打开，可切换完成状态、管理关联或删除
 - 在至少保留一项时，空白且无关联的 Todo 项支持键盘删除快捷键；`Esc` 可折叠为胶囊
-- Todo 项可关联另一张纸片，再次点击可按设置将已展开的深胶囊纸片收回
-- Todo 项可关联文件快启；除系统选择器外，可直接把 UDMF 文件、文件夹或文件 URI 拖到任意 Todo 行建立快启。2in1 额外提供文件夹选择入口。关联后尝试持久化只读 URI 授权，打开前再次激活授权
+- Todo 项可关联另一张纸片；既可从关联选择条选择，也可从控制中心把纸片的独立拖动柄直接拖到 Todo 行。再次点击可按设置将已展开的深胶囊纸片收回
+- Todo 项可关联文件快启；除系统选择器外，可直接把 UDMF 文件、文件夹或文件 URI 拖到任意 Todo 行建立快启。2in1 额外提供文件夹选择入口。关联后尝试持久化只读 URI 授权，打开前再次激活授权；右键菜单可打开目标或尝试打开其所在文件夹
 - 纸片关联、文件快启和文件夹快启互斥，失效目标可重新选择或解除
 
 ### Note 纸与 Markdown
@@ -162,8 +162,8 @@ HarmonyOS 没有 Windows 传统托盘，当前由“纸片控制中心”承担�
 
 - `phone` / `tablet` 虽在工程目标中，但自由窗口、Topmost、极小胶囊窗口和 Hover 的表现由设备形态及窗口管理器决定；桌面行为以 PC / 2in1 真机结果为准。
 - 当前只有默认显示器上的单个右侧队列，不支持多屏、多队列、左右换边、主胶囊或从队列横向拖出。
-- Todo 有 List 排序和删除按钮，但没有 Windows 版“拖到专用删除区”的交互。
-- 文件快启会请求 `FILE_ACCESS_PERSIST` 并尝试持久化只读授权，但系统文档提供方或设备可能拒绝；此时仍保存关联并提示，当前授权失效后需要重新选择。文件夹选择仅在 2in1 暴露，直接拖入则依赖来源应用提供兼容的 UDMF 记录。
+- Todo 的统一拖动柄支持基础行间排序和拖到底部删除，但不复刻系统 List 原生排序的自动让位与长列表边缘自动滚动；长列表仍可分段拖动。
+- 文件快启会请求 `FILE_ACCESS_PERSIST` 并尝试持久化只读授权，但系统文档提供方或设备可能拒绝；此时仍保存关联并提示，当前授权失效后需要重新选择。“打开所在位置”还依赖设备上存在可处理目录 URI 的系统应用。文件夹选择仅在 2in1 暴露，直接拖入则依赖来源应用提供兼容的 UDMF 记录。
 - 图片粘贴只处理经 `PasteButton` 授权得到的图片 URI / PixelMap；拖入能力依赖来源应用提供兼容的 UDMF 记录。当前不解析 HTML / Base64 图片，也不直接渲染网络图片。
 - 删除 Note 会移除主状态中的附件元数据，但为保护自动备份，私有图片文件不会同步立即删除；孤儿文件在后续初始化、超过 24 小时宽限且不再被 backup 引用后才回收。
 - Markdown 是轻量逐行预览，不是完整 CommonMark 引擎；不支持表格、网络图片、完整块级 HTML 或 WPF 渲染的逐像素复刻。
@@ -222,12 +222,14 @@ PaperTodo-HarmonyOS/
 │  │  │  │  ├─ GlobalHotkeys.ets
 │  │  │  │  ├─ Models.ets
 │  │  │  │  ├─ PaperStore.ets
+│  │  │  │  ├─ PaperLinkDrag.ets
 │  │  │  │  ├─ MarkdownLite.ets
 │  │  │  │  ├─ NoteEditing.ets
 │  │  │  │  ├─ NoteImageStore.ets
 │  │  │  │  ├─ Strings.ets
 │  │  │  │  ├─ TextSafety.ets
 │  │  │  │  ├─ ThemePalette.ets
+│  │  │  │  ├─ TodoDrag.ets
 │  │  │  │  └─ TodoHistory.ets
 │  │  │  └─ pages/
 │  │  │     ├─ Index.ets

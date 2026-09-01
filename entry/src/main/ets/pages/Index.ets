@@ -1,4 +1,5 @@
 import { common, ConfigurationConstant, Want } from '@kit.AbilityKit';
+import { unifiedDataChannel } from '@kit.ArkData';
 import { BusinessError } from '@kit.BasicServicesKit';
 import {
   COLOR_SCHEME_FOREST,
@@ -27,6 +28,7 @@ import {
   VISUAL_TEXT_SMALL
 } from '../common/Models';
 import { GlobalHotkeys } from '../common/GlobalHotkeys';
+import { createPaperLinkDragData } from '../common/PaperLinkDrag';
 import { PaperStore } from '../common/PaperStore';
 import { formatText, languageLabel, resolveLanguage, supportedLanguages, tForSystem } from '../common/Strings';
 import { ThemePalette, resolvePalette } from '../common/ThemePalette';
@@ -579,6 +581,17 @@ struct Index {
     return parts.join(' · ');
   }
 
+  private beginPaperLinkDrag(event: DragEvent, paper: PaperData): DragItemInfo {
+    const data: unifiedDataChannel.UnifiedData = createPaperLinkDragData(
+      paper.id,
+      paper.type,
+      this.paperTitle(paper)
+    );
+    event.setData(data);
+    event.dragBehavior = DragBehavior.COPY;
+    return { extraInfo: paper.id };
+  }
+
   @Builder
   private SettingButton(label: string, action: () => void) {
     Button(label)
@@ -879,8 +892,19 @@ struct Index {
           ForEach(this.papers, (paper: PaperData) => {
             ListItem() {
               Row() {
+                Text('⠿')
+                  .width(28)
+                  .height(40)
+                  .textAlign(TextAlign.Center)
+                  .fontSize(15)
+                  .fontColor(this.mutedColor())
+                  .backgroundColor(this.pageBackgroundColor())
+                  .borderRadius(8)
+                  .margin({ right: 6 })
+                  .draggable(true)
+                  .onDragStart((event: DragEvent): DragItemInfo => this.beginPaperLinkDrag(event, paper))
                 Text(paper.type === PAPER_TYPE_NOTE ? '✎' : '☑')
-                  .width(34)
+                  .width(28)
                   .fontSize(18)
                   .fontColor(this.textColor())
                 Column() {
