@@ -7,6 +7,11 @@ export const THEME_SYSTEM: string = 'system';
 export const THEME_LIGHT: string = 'light';
 export const THEME_DARK: string = 'dark';
 
+export const COLOR_SCHEME_WARM: string = 'warm';
+export const COLOR_SCHEME_INK: string = 'ink';
+export const COLOR_SCHEME_FOREST: string = 'forest';
+export const COLOR_SCHEME_ROSE: string = 'rose';
+
 export const MARKDOWN_OFF: string = 'off';
 export const MARKDOWN_BASIC: string = 'basic';
 export const MARKDOWN_ENHANCED: string = 'enhanced';
@@ -91,6 +96,7 @@ export interface AppState {
   initialized: boolean;
   papers: PaperData[];
   theme: string;
+  colorScheme: string;
   markdownRenderMode: string;
   useCapsuleMode: boolean;
   useDeepCapsuleMode: boolean;
