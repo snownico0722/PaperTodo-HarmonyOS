@@ -2,6 +2,14 @@ import { common, ConfigurationConstant, Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { display, window } from '@kit.ArkUI';
 import {
+  CapsuleMetrics,
+  createCapsuleMetrics,
+  edgeCapsuleFullX,
+  edgeCapsuleHiddenX,
+  edgeCapsuleY
+} from '../common/CapsuleGeometry';
+import { CapsuleMotion } from '../common/CapsuleMotion';
+import {
   CAPSULE_HEIGHT,
   CAPSULE_WIDTH,
   MARKDOWN_BASIC,
@@ -36,15 +44,28 @@ import {
   parseMarkdownLines
 } from '../common/MarkdownLite';
 import { PaperStore } from '../common/PaperStore';
+import {
+  createDisplayGeometry,
+  DisplayGeometry,
+  pxToVp,
+  vpToPx
+} from '../common/WindowGeometry';
+
+const CAPSULE_REVEAL_MS: number = 110;
+const CAPSULE_HIDE_MS: number = 130;
+const CAPSULE_DRAG_THRESHOLD: number = 4;
+const CAPSULE_CLICK_SUPPRESS_MS: number = 250;
 
 @Entry({ useSharedStorage: true })
 @Component
 struct Paper {
   @LocalStorageProp('paperId') paperId: string = '';
+  @LocalStorageLink('windowWidthVp') windowWidthVp: number = 320;
+  @LocalStorageLink('windowHeightVp') windowHeightVp: number = 360;
   @StorageLink('theme') theme: string = THEME_SYSTEM;
   @StorageLink('markdownRenderMode') @Watch('onMarkdownModeChanged') markdownRenderMode: string = MARKDOWN_ENHANCED;
   @StorageLink('useCapsuleMode') useCapsuleMode: boolean = true;
-  @StorageLink('useDeepCapsuleMode') useDeepCapsuleMode: boolean = true;
+  @StorageLink('useDeepCapsuleMode') @Watch('onDeepCapsuleModeChanged') useDeepCapsuleMode: boolean = true;
   @StorageLink('todoVisualSize') todoVisualSize: string = TODO_VISUAL_MEDIUM;
   @StorageLink('autoBottomCompleted') autoBottomCompleted: boolean = false;
   @StorageLink('capsuleGap') capsuleGap: number = 4;
@@ -60,7 +81,6 @@ struct Paper {
   @State isCollapsed: boolean = false;
   @State markdownLines: MarkdownLine[] = [];
   @State deleteConfirm: boolean = false;
-  @State layoutWidth: number = 320;
   @State showMoreActions: boolean = false;
   @State statusMessage: string = '';
 
@@ -73,12 +93,18 @@ struct Paper {
   private resizeBaseHeight: number = 0;
   private resizeCurrentWidth: number = 0;
   private resizeCurrentHeight: number = 0;
+  private capsuleMotion: CapsuleMotion = new CapsuleMotion();
+  private capsuleHovered: boolean = false;
+  private capsuleDragging: boolean = false;
+  private capsuleMovedDuringDrag: boolean = false;
+  private suppressCapsuleClickUntil: number = 0;
 
   aboutToAppear(): void {
     this.reloadPaper();
   }
 
   aboutToDisappear(): void {
+    this.capsuleMotion.stop();
     PaperStore.flushNow();
   }
 
@@ -93,10 +119,11 @@ struct Paper {
     this.content = loaded.content;
     this.alwaysOnTop = loaded.alwaysOnTop;
     this.isCollapsed = loaded.isCollapsed && this.useCapsuleMode;
-    this.layoutWidth = loaded.expandedWidth;
+    this.windowWidthVp = loaded.expandedWidth;
+    this.windowHeightVp = loaded.expandedHeight;
     this.refreshMarkdown();
     if (this.isCollapsed) {
-      setTimeout((): void => this.syncCollapsedWindow(false), 100);
+      setTimeout((): void => this.syncCollapsedWindow(false), 80);
     }
   }
 
@@ -113,13 +140,28 @@ struct Paper {
       this.restoreExpandedWindow();
       return;
     }
-    if (this.isCollapsed) {
-      this.syncCollapsedWindow(false);
+    if (this.isCollapsed && !this.capsuleDragging) {
+      this.syncCollapsedWindow(this.capsuleHovered);
     }
   }
 
   private onMarkdownModeChanged(): void {
     this.refreshMarkdown();
+  }
+
+  private onDeepCapsuleModeChanged(): void {
+    if (!this.isCollapsed || this.paper === null || this.capsuleDragging) {
+      return;
+    }
+    if (!this.useDeepCapsuleMode) {
+      const geometry: DisplayGeometry = this.displayGeometry();
+      const metrics: CapsuleMetrics = this.capsuleMetrics();
+      const index: number = PaperStore.getCollapsedIndex(this.paperId);
+      this.paper.capsuleX = pxToVp(edgeCapsuleFullX(metrics), geometry.density);
+      this.paper.capsuleY = pxToVp(edgeCapsuleY(index, metrics), geometry.density);
+      PaperStore.updatePaper(this.paper, false);
+    }
+    this.syncCollapsedWindow(this.capsuleHovered);
   }
 
   private savePaper(immediate: boolean = false): void {
@@ -140,6 +182,16 @@ struct Paper {
 
   private hostContext(): common.UIAbilityContext {
     return this.getUIContext().getHostContext() as common.UIAbilityContext;
+  }
+
+  private displayGeometry(): DisplayGeometry {
+    const screen: display.Display = display.getDefaultDisplaySync();
+    return createDisplayGeometry(screen.width, screen.height, screen.densityPixels);
+  }
+
+  private capsuleMetrics(): CapsuleMetrics {
+    const screen: display.Display = display.getDefaultDisplaySync();
+    return createCapsuleMetrics(screen.width, screen.height, screen.densityPixels, this.capsuleGap);
   }
 
   private isDark(): boolean {
@@ -242,9 +294,13 @@ struct Paper {
     this.savePaper(true);
     const win: window.Window | undefined = this.currentWindow();
     if (win !== undefined) {
-      win.setWindowTopmost(this.alwaysOnTop).catch((error: BusinessError): void => {
-        console.error('setWindowTopmost failed: ' + error.message);
-      });
+      try {
+        win.setWindowTopmost(this.alwaysOnTop).catch((error: BusinessError): void => {
+          console.error('setWindowTopmost failed: ' + error.message);
+        });
+      } catch (error) {
+        console.error('setWindowTopmost threw: ' + String(error));
+      }
     }
   }
 
@@ -252,6 +308,7 @@ struct Paper {
     if (this.paper === null) {
       return;
     }
+    this.capsuleMotion.stop();
     this.paper.isVisible = false;
     this.savePaper(true);
     PaperStore.flushNow();
@@ -263,6 +320,7 @@ struct Paper {
       this.deleteConfirm = true;
       return;
     }
+    this.capsuleMotion.stop();
     PaperStore.deletePaper(this.paperId);
     PaperStore.flushNow();
     this.hostContext().terminateSelf();
@@ -275,7 +333,7 @@ struct Paper {
       return;
     }
     const want: Want = {
-      bundleName: 'com.snownico.papertodo',
+      bundleName: 'com.papertodo.app',
       moduleName: 'entry',
       abilityName: 'PaperAbility',
       parameters: {
@@ -283,9 +341,13 @@ struct Paper {
         paperCommand: 'show'
       }
     };
-    this.hostContext().startAbility(want).catch((error: BusinessError): void => {
-      this.statusMessage = '新建纸片失败：' + error.message;
-    });
+    try {
+      this.hostContext().startAbility(want).catch((error: BusinessError): void => {
+        this.statusMessage = '新建纸片失败：' + error.message;
+      });
+    } catch (error) {
+      this.statusMessage = '新建纸片失败：' + String(error);
+    }
   }
 
   private cycleTheme(): void {
@@ -325,9 +387,18 @@ struct Paper {
     if (this.paper === null) {
       return;
     }
+    this.capsuleHovered = false;
+    this.capsuleDragging = false;
+    this.capsuleMovedDuringDrag = false;
+    this.suppressCapsuleClickUntil = 0;
+    this.capsuleMotion.reset();
     this.isCollapsed = collapsed;
     this.paper.isCollapsed = collapsed;
     this.savePaper(true);
+    // Visibility does not change here, but setPaperVisible is the store-owned path that
+    // broadcasts a layout revision. Edge queues must repack whenever one paper enters
+    // or leaves the collapsed set.
+    PaperStore.setPaperVisible(this.paperId, this.paper.isVisible);
     if (collapsed) {
       this.syncCollapsedWindow(false);
     } else {
@@ -339,13 +410,15 @@ struct Paper {
     if (this.paper === null) {
       return;
     }
-    const win: window.Window | undefined = this.currentWindow();
-    if (win === undefined) {
-      return;
-    }
-    this.layoutWidth = this.paper.expandedWidth;
-    win.resize(Math.round(this.paper.expandedWidth), Math.round(this.paper.expandedHeight));
-    win.moveWindowTo(Math.round(this.paper.expandedX), Math.round(this.paper.expandedY));
+    this.capsuleMotion.reset();
+    this.windowWidthVp = this.paper.expandedWidth;
+    this.windowHeightVp = this.paper.expandedHeight;
+    this.applyWindowRectVp(
+      this.paper.expandedX,
+      this.paper.expandedY,
+      this.paper.expandedWidth,
+      this.paper.expandedHeight
+    );
   }
 
   private syncCollapsedWindow(hovered: boolean): void {
@@ -356,30 +429,16 @@ struct Paper {
     if (win === undefined) {
       return;
     }
-    win.resize(CAPSULE_WIDTH, CAPSULE_HEIGHT);
+    const metrics: CapsuleMetrics = this.capsuleMetrics();
+    this.safeResizePx(win, metrics.widthPx, metrics.heightPx);
     if (this.useDeepCapsuleMode) {
-      this.snapCapsule(hovered);
+      this.animateEdgeCapsule(hovered, metrics);
     } else {
-      this.moveFloatingCapsule();
+      this.moveFloatingCapsule(metrics);
     }
   }
 
-  private moveFloatingCapsule(): void {
-    if (this.paper === null) {
-      return;
-    }
-    const win: window.Window | undefined = this.currentWindow();
-    if (win === undefined) {
-      return;
-    }
-    const screen: display.Display = display.getDefaultDisplaySync();
-    this.paper.capsuleX = this.clamp(this.paper.capsuleX, 0, Math.max(0, screen.width - CAPSULE_WIDTH));
-    this.paper.capsuleY = this.clamp(this.paper.capsuleY, 0, Math.max(0, screen.height - CAPSULE_HEIGHT));
-    PaperStore.updatePaper(this.paper, false);
-    win.moveWindowTo(Math.round(this.paper.capsuleX), Math.round(this.paper.capsuleY));
-  }
-
-  private snapCapsule(hovered: boolean): void {
+  private animateEdgeCapsule(hovered: boolean, metrics: CapsuleMetrics = this.capsuleMetrics()): void {
     if (!this.isCollapsed || !this.useDeepCapsuleMode || this.paper === null) {
       return;
     }
@@ -387,32 +446,80 @@ struct Paper {
     if (win === undefined) {
       return;
     }
-    const screen: display.Display = display.getDefaultDisplaySync();
-    const fullX: number = Math.max(0, screen.width - CAPSULE_WIDTH);
-    const hidden: number = hovered ? 0 : Math.round(CAPSULE_WIDTH * 0.45);
     const index: number = PaperStore.getCollapsedIndex(this.paperId);
-    const targetY: number = 20 + index * (CAPSULE_HEIGHT + this.capsuleGap);
-    if (this.paper.capsuleX !== fullX || this.paper.capsuleY !== targetY) {
-      this.paper.capsuleX = fullX;
-      this.paper.capsuleY = targetY;
-      PaperStore.updatePaper(this.paper, false);
+    const targetY: number = edgeCapsuleY(index, metrics);
+    const targetX: number = hovered ? edgeCapsuleFullX(metrics) : edgeCapsuleHiddenX(metrics);
+    const duration: number = hovered ? CAPSULE_REVEAL_MS : CAPSULE_HIDE_MS;
+    this.capsuleMotion.animateX(win, targetX, targetY, duration);
+  }
+
+  private onCapsuleHover(isHover: boolean): void {
+    this.capsuleHovered = isHover;
+    if (!this.isCollapsed || !this.useDeepCapsuleMode || this.capsuleDragging) {
+      return;
     }
-    win.moveWindowTo(fullX + hidden, targetY);
+    this.animateEdgeCapsule(isHover);
+  }
+
+  private activateCapsule(): void {
+    if (Date.now() < this.suppressCapsuleClickUntil) {
+      return;
+    }
+    this.setCollapsed(false);
+  }
+
+  private moveFloatingCapsule(metrics: CapsuleMetrics = this.capsuleMetrics()): void {
+    if (this.paper === null) {
+      return;
+    }
+    const win: window.Window | undefined = this.currentWindow();
+    if (win === undefined) {
+      return;
+    }
+    const geometry: DisplayGeometry = this.displayGeometry();
+    this.capsuleMotion.stop();
+    this.paper.capsuleX = this.clamp(
+      this.paper.capsuleX,
+      0,
+      Math.max(0, geometry.screenWidthVp - CAPSULE_WIDTH)
+    );
+    this.paper.capsuleY = this.clamp(
+      this.paper.capsuleY,
+      0,
+      Math.max(0, geometry.screenHeightVp - CAPSULE_HEIGHT)
+    );
+    PaperStore.updatePaper(this.paper, false);
+    this.capsuleMotion.setPosition(
+      win,
+      vpToPx(this.paper.capsuleX, geometry.density),
+      vpToPx(this.paper.capsuleY, geometry.density)
+    );
   }
 
   private beginMove(): void {
     if (this.paper === null) {
       return;
     }
-    if (this.isCollapsed) {
-      if (this.useDeepCapsuleMode) {
-        const screen: display.Display = display.getDefaultDisplaySync();
-        this.moveBaseX = Math.max(0, screen.width - CAPSULE_WIDTH);
-        this.moveBaseY = this.paper.capsuleY;
-      } else {
-        this.moveBaseX = this.paper.capsuleX;
-        this.moveBaseY = this.paper.capsuleY;
+    this.capsuleMovedDuringDrag = false;
+    if (this.isCollapsed && this.useDeepCapsuleMode) {
+      const win: window.Window | undefined = this.currentWindow();
+      const metrics: CapsuleMetrics = this.capsuleMetrics();
+      const index: number = PaperStore.getCollapsedIndex(this.paperId);
+      this.capsuleDragging = true;
+      this.capsuleMotion.stop();
+      this.moveBaseX = pxToVp(edgeCapsuleFullX(metrics), metrics.density);
+      this.moveBaseY = pxToVp(edgeCapsuleY(index, metrics), metrics.density);
+      this.moveCurrentX = this.moveBaseX;
+      this.moveCurrentY = this.moveBaseY;
+      if (win !== undefined) {
+        this.capsuleMotion.setPosition(win, edgeCapsuleFullX(metrics), edgeCapsuleY(index, metrics));
       }
+      return;
+    }
+
+    if (this.isCollapsed) {
+      this.moveBaseX = this.paper.capsuleX;
+      this.moveBaseY = this.paper.capsuleY;
     } else {
       this.moveBaseX = this.paper.expandedX;
       this.moveBaseY = this.paper.expandedY;
@@ -422,33 +529,90 @@ struct Paper {
   }
 
   private updateMove(event: GestureEvent): void {
+    const paper: PaperData | null = this.paper;
+    if (paper === null) {
+      return;
+    }
     const win: window.Window | undefined = this.currentWindow();
     if (win === undefined) {
       return;
     }
-    this.moveCurrentX = Math.round(this.moveBaseX + event.offsetX);
-    this.moveCurrentY = Math.round(this.moveBaseY + event.offsetY);
-    win.moveWindowTo(this.moveCurrentX, this.moveCurrentY);
+
+    if (this.isCollapsed &&
+      (Math.abs(event.offsetX) >= CAPSULE_DRAG_THRESHOLD || Math.abs(event.offsetY) >= CAPSULE_DRAG_THRESHOLD)) {
+      this.capsuleMovedDuringDrag = true;
+    }
+
+    if (this.isCollapsed && this.useDeepCapsuleMode) {
+      const geometry: DisplayGeometry = this.displayGeometry();
+      const metrics: CapsuleMetrics = this.capsuleMetrics();
+      this.moveCurrentX = pxToVp(edgeCapsuleFullX(metrics), metrics.density);
+      this.moveCurrentY = this.clamp(
+        this.moveBaseY + event.offsetY,
+        0,
+        Math.max(0, geometry.screenHeightVp - CAPSULE_HEIGHT)
+      );
+      this.capsuleMotion.setPosition(
+        win,
+        edgeCapsuleFullX(metrics),
+        vpToPx(this.moveCurrentY, geometry.density)
+      );
+      return;
+    }
+
+    this.moveCurrentX = this.moveBaseX + event.offsetX;
+    this.moveCurrentY = this.moveBaseY + event.offsetY;
+    const geometry: DisplayGeometry = this.displayGeometry();
+    if (this.isCollapsed) {
+      this.moveCurrentX = this.clamp(this.moveCurrentX, 0, Math.max(0, geometry.screenWidthVp - CAPSULE_WIDTH));
+      this.moveCurrentY = this.clamp(this.moveCurrentY, 0, Math.max(0, geometry.screenHeightVp - CAPSULE_HEIGHT));
+      this.capsuleMotion.setPosition(
+        win,
+        vpToPx(this.moveCurrentX, geometry.density),
+        vpToPx(this.moveCurrentY, geometry.density)
+      );
+    } else {
+      this.moveCurrentX = this.clamp(
+        this.moveCurrentX,
+        0,
+        Math.max(0, geometry.screenWidthVp - paper.expandedWidth)
+      );
+      this.moveCurrentY = this.clamp(
+        this.moveCurrentY,
+        0,
+        Math.max(0, geometry.screenHeightVp - paper.expandedHeight)
+      );
+      this.safeMoveVp(win, this.moveCurrentX, this.moveCurrentY, geometry);
+    }
   }
 
   private endMove(): void {
     if (this.paper === null) {
       return;
     }
+    if (this.isCollapsed && this.capsuleMovedDuringDrag) {
+      this.suppressCapsuleClickUntil = Date.now() + CAPSULE_CLICK_SUPPRESS_MS;
+    }
+    this.capsuleMovedDuringDrag = false;
+
     if (this.isCollapsed) {
       if (this.useDeepCapsuleMode) {
-        const desiredIndex: number = Math.max(0,
-          Math.round((this.moveCurrentY - 20) / (CAPSULE_HEIGHT + this.capsuleGap)));
+        const desiredIndex: number = Math.max(
+          0,
+          Math.round((this.moveCurrentY - 20) / (CAPSULE_HEIGHT + this.capsuleGap))
+        );
         PaperStore.moveCollapsedPaper(this.paperId, desiredIndex);
         const latest: PaperData | null = PaperStore.getPaper(this.paperId);
         if (latest !== null) {
           this.paper = latest;
         }
-        this.snapCapsule(false);
+        this.capsuleDragging = false;
+        this.syncCollapsedWindow(this.capsuleHovered);
       } else {
         this.paper.capsuleX = this.moveCurrentX;
         this.paper.capsuleY = this.moveCurrentY;
         PaperStore.updatePaper(this.paper, false);
+        this.moveFloatingCapsule();
       }
       return;
     }
@@ -469,17 +633,27 @@ struct Paper {
   }
 
   private updateResize(event: GestureEvent): void {
-    if (this.isCollapsed) {
+    if (this.paper === null || this.isCollapsed) {
       return;
     }
     const win: window.Window | undefined = this.currentWindow();
     if (win === undefined) {
       return;
     }
-    this.resizeCurrentWidth = Math.max(PAPER_MIN_WIDTH, Math.round(this.resizeBaseWidth + event.offsetX));
-    this.resizeCurrentHeight = Math.max(PAPER_MIN_HEIGHT, Math.round(this.resizeBaseHeight + event.offsetY));
-    this.layoutWidth = this.resizeCurrentWidth;
-    win.resize(this.resizeCurrentWidth, this.resizeCurrentHeight);
+    const geometry: DisplayGeometry = this.displayGeometry();
+    this.resizeCurrentWidth = this.clamp(
+      this.resizeBaseWidth + event.offsetX,
+      PAPER_MIN_WIDTH,
+      geometry.screenWidthVp
+    );
+    this.resizeCurrentHeight = this.clamp(
+      this.resizeBaseHeight + event.offsetY,
+      PAPER_MIN_HEIGHT,
+      geometry.screenHeightVp
+    );
+    this.windowWidthVp = this.resizeCurrentWidth;
+    this.windowHeightVp = this.resizeCurrentHeight;
+    this.safeResizeVp(win, this.resizeCurrentWidth, this.resizeCurrentHeight, geometry);
   }
 
   private endResize(): void {
@@ -488,7 +662,56 @@ struct Paper {
     }
     this.paper.expandedWidth = this.resizeCurrentWidth;
     this.paper.expandedHeight = this.resizeCurrentHeight;
+    const geometry: DisplayGeometry = this.displayGeometry();
+    this.paper.expandedX = this.clamp(
+      this.paper.expandedX,
+      0,
+      Math.max(0, geometry.screenWidthVp - this.paper.expandedWidth)
+    );
+    this.paper.expandedY = this.clamp(
+      this.paper.expandedY,
+      0,
+      Math.max(0, geometry.screenHeightVp - this.paper.expandedHeight)
+    );
     PaperStore.updatePaper(this.paper, false);
+  }
+
+  private applyWindowRectVp(xVp: number, yVp: number, widthVp: number, heightVp: number): void {
+    const win: window.Window | undefined = this.currentWindow();
+    if (win === undefined) {
+      return;
+    }
+    const geometry: DisplayGeometry = this.displayGeometry();
+    this.safeResizeVp(win, widthVp, heightVp, geometry);
+    this.safeMoveVp(win, xVp, yVp, geometry);
+  }
+
+  private safeMoveVp(win: window.Window, xVp: number, yVp: number, geometry: DisplayGeometry): void {
+    this.safeMovePx(win, vpToPx(xVp, geometry.density), vpToPx(yVp, geometry.density));
+  }
+
+  private safeResizeVp(win: window.Window, widthVp: number, heightVp: number, geometry: DisplayGeometry): void {
+    this.safeResizePx(win, vpToPx(widthVp, geometry.density), vpToPx(heightVp, geometry.density));
+  }
+
+  private safeMovePx(win: window.Window, xPx: number, yPx: number): void {
+    try {
+      win.moveWindowTo(Math.max(0, Math.round(xPx)), Math.max(0, Math.round(yPx))).catch(
+        (error: BusinessError): void => console.error('moveWindowTo failed: ' + error.message)
+      );
+    } catch (error) {
+      console.error('moveWindowTo threw: ' + String(error));
+    }
+  }
+
+  private safeResizePx(win: window.Window, widthPx: number, heightPx: number): void {
+    try {
+      win.resize(Math.max(1, Math.round(widthPx)), Math.max(1, Math.round(heightPx))).catch(
+        (error: BusinessError): void => console.error('resize failed: ' + error.message)
+      );
+    } catch (error) {
+      console.error('resize threw: ' + String(error));
+    }
   }
 
   private toggleTodo(id: string): void {
@@ -720,7 +943,7 @@ struct Paper {
           this.savePaper(false);
         })
 
-      if (this.paper !== null && this.paper.type === PAPER_TYPE_NOTE && this.layoutWidth >= 320) {
+      if (this.paper !== null && this.paper.type === PAPER_TYPE_NOTE && this.windowWidthVp >= 320) {
         Button(this.isNoteBrowsing ? '编' : '览')
           .width(30)
           .height(30)
@@ -729,7 +952,7 @@ struct Paper {
           .backgroundColor(Color.Transparent)
           .onClick((): void => this.toggleNoteBrowse())
       }
-      if (this.paper !== null && this.paper.type === PAPER_TYPE_NOTE && this.layoutWidth >= 380) {
+      if (this.paper !== null && this.paper.type === PAPER_TYPE_NOTE && this.windowWidthVp >= 380) {
         Button(this.markdownModeLabel())
           .width(38)
           .height(30)
@@ -738,7 +961,7 @@ struct Paper {
           .backgroundColor(Color.Transparent)
           .onClick((): void => this.cycleMarkdownMode())
       }
-      if (this.layoutWidth >= 430) {
+      if (this.windowWidthVp >= 430) {
         Button('◐')
           .width(30)
           .height(30)
@@ -747,7 +970,7 @@ struct Paper {
           .backgroundColor(Color.Transparent)
           .onClick((): void => this.cycleTheme())
       }
-      if (this.useCapsuleMode && this.layoutWidth >= 470) {
+      if (this.useCapsuleMode && this.windowWidthVp >= 470) {
         Button('▁')
           .width(30)
           .height(30)
@@ -756,7 +979,7 @@ struct Paper {
           .backgroundColor(Color.Transparent)
           .onClick((): void => this.setCollapsed(true))
       }
-      if (this.layoutWidth >= 540) {
+      if (this.windowWidthVp >= 540) {
         Button('☑+')
           .width(34)
           .height(30)
@@ -765,7 +988,7 @@ struct Paper {
           .backgroundColor(Color.Transparent)
           .onClick((): void => this.createPaper(PAPER_TYPE_TODO))
       }
-      if (this.layoutWidth >= 580) {
+      if (this.windowWidthVp >= 580) {
         Button('✎+')
           .width(34)
           .height(30)
@@ -774,7 +997,7 @@ struct Paper {
           .backgroundColor(Color.Transparent)
           .onClick((): void => this.createPaper(PAPER_TYPE_NOTE))
       }
-      if (this.layoutWidth < 580) {
+      if (this.windowWidthVp < 580) {
         Button('⋯')
           .width(30)
           .height(30)
@@ -910,7 +1133,6 @@ struct Paper {
             .height(this.todoRowHeight())
             .padding({ left: 8, right: 4 })
           }
-          .editable(true)
         }, (item: PaperItem): string => item.id)
           .onMove((from: number, to: number): void => this.moveTodo(from, to))
       }
@@ -1088,8 +1310,8 @@ struct Paper {
     .backgroundColor(this.paperColor())
     .border({ width: 1, color: this.paperBorderColor() })
     .borderRadius(22)
-    .onHover((isHover: boolean): void => this.snapCapsule(isHover))
-    .onClick((): void => this.setCollapsed(false))
+    .onHover((isHover: boolean): void => this.onCapsuleHover(isHover))
+    .onClick((): void => this.activateCapsule())
     .gesture(
       PanGesture({ direction: PanDirection.All })
         .onActionStart((): void => this.beginMove())

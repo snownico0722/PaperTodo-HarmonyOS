@@ -6,11 +6,11 @@ on:
       build_mode:
         description: Build mode
         required: true
-        default: debug
+        default: release
         type: choice
         options:
-          - debug
           - release
+          - debug
   push:
     tags:
       - 'v*'
@@ -37,13 +37,76 @@ jobs:
         with:
           node-version: '18'
 
+      - name: Verify AGC developer Service Account
+        shell: bash
+        env:
+          AGC_SERVICE_ACCOUNT_JSON: ${{ secrets.AGC_SERVICE_ACCOUNT_JSON }}
+          AGC_APP_ID: ${{ secrets.AGC_APP_ID }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${AGC_SERVICE_ACCOUNT_JSON:-}" || -z "${AGC_APP_ID:-}" ]]; then
+            echo 'AGC credentials are unavailable; release build will continue unsigned.'
+            exit 0
+          fi
+
+          JWT="$(node <<'NODE'
+          const crypto = require('crypto');
+          const account = JSON.parse(process.env.AGC_SERVICE_ACCOUNT_JSON);
+          for (const key of ['key_id', 'private_key', 'sub_account']) {
+            if (!account[key]) {
+              throw new Error(`AGC Service Account JSON is missing ${key}`);
+            }
+          }
+          const now = Math.floor(Date.now() / 1000);
+          const b64 = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
+          const input = `${b64({ kid: account.key_id, typ: 'JWT', alg: 'PS256' })}.${b64({
+            iss: account.sub_account,
+            aud: 'https://oauth-login.cloud.huawei.com/oauth2/v3/token',
+            iat: now,
+            exp: now + 3600
+          })}`;
+          const signature = crypto.sign('sha256', Buffer.from(input), {
+            key: account.private_key,
+            padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
+            saltLength: 32
+          });
+          process.stdout.write(`${input}.${signature.toString('base64url')}`);
+          NODE
+          )"
+          echo "::add-mask::$JWT"
+
+          BODY="$(mktemp)"
+          STATUS="$(curl --silent --show-error \
+            --output "$BODY" \
+            --write-out '%{http_code}' \
+            --request GET \
+            --header "Authorization: Bearer $JWT" \
+            --header "appId: $AGC_APP_ID" \
+            --header 'Content-Type: application/json' \
+            'https://connect-api.cloud.huawei.com/api/publish/v3/provision/list?fromRecCount=1&maxReqCount=10')"
+
+          if [[ "$STATUS" != '200' ]]; then
+            echo "AGC Provisioning read-only probe returned HTTP $STATUS; release build will continue unsigned." >&2
+            rm -f "$BODY"
+            exit 0
+          fi
+
+          RET_CODE="$(jq -r '.ret.code // -1' "$BODY")"
+          TOTAL_COUNT="$(jq -r '.totalCount // 0' "$BODY")"
+          rm -f "$BODY"
+          if [[ "$RET_CODE" != '0' ]]; then
+            echo "AGC Provisioning read-only probe returned ret.code=$RET_CODE; release build will continue unsigned." >&2
+            exit 0
+          fi
+          echo "AGC developer Service Account verified; visible profiles: $TOTAL_COUNT"
+
       - name: Cache HarmonyOS Command Line Tools
         id: cache-tools
         uses: actions/cache@v4
         with:
           path: command-line-tools
           key: ${{ runner.os }}-harmonyos-cli-6.1.0.816
-          save-always: true
 
       - name: Download HarmonyOS Command Line Tools
         if: steps.cache-tools.outputs.cache-hit != 'true'
@@ -71,7 +134,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          BUILD_MODE="debug"
+          BUILD_MODE="release"
           SOURCE_SHA="$GITHUB_SHA"
 
           if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
@@ -116,18 +179,12 @@ jobs:
 
           if [[ ${#APPS[@]} -eq 0 ]]; then
             echo 'assembleApp succeeded, but no .app package was found.' >&2
-            echo 'Build outputs:' >&2
-            find . -type f -path '*/build/*' \
-              \( -name '*.app' -o -name '*.hap' \) \
-              -print >&2
             exit 1
           fi
 
           OUTPUTS=("${APPS[@]}" "${HAPS[@]}")
-
           printf 'Collected outputs:\n'
           printf '  %s\n' "${OUTPUTS[@]}"
-
           for file in "${OUTPUTS[@]}"; do
             cp "$file" package/payload/
           done
@@ -138,14 +195,12 @@ jobs:
             zip -9 "../${PACKAGE_BASENAME}.zip" ./*
           )
 
-          ls -lah package package/payload
-
       - name: Upload packaged build
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.PACKAGE_BASENAME }}
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 1
           path: |
             package/${{ env.PACKAGE_BASENAME }}.zip
             package/payload/*.app

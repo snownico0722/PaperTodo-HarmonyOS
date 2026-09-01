@@ -1,6 +1,10 @@
 import { common, ConfigurationConstant, Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import {
+  COLOR_SCHEME_FOREST,
+  COLOR_SCHEME_INK,
+  COLOR_SCHEME_ROSE,
+  COLOR_SCHEME_WARM,
   MARKDOWN_BASIC,
   MARKDOWN_ENHANCED,
   MARKDOWN_OFF,
@@ -22,11 +26,15 @@ import { PaperStore } from '../common/PaperStore';
 @Component
 struct Index {
   @StorageLink('theme') theme: string = THEME_SYSTEM;
+  @StorageLink('colorScheme') colorScheme: string = COLOR_SCHEME_WARM;
   @StorageLink('markdownRenderMode') markdownRenderMode: string = MARKDOWN_ENHANCED;
   @StorageLink('useCapsuleMode') useCapsuleMode: boolean = true;
   @StorageLink('useDeepCapsuleMode') useDeepCapsuleMode: boolean = true;
   @StorageLink('todoVisualSize') todoVisualSize: string = TODO_VISUAL_MEDIUM;
   @StorageLink('autoBottomCompleted') autoBottomCompleted: boolean = false;
+  @StorageLink('autoClearCompletedTodos') autoClearCompletedTodos: boolean = false;
+  @StorageLink('enableTodoNoteLinks') enableTodoNoteLinks: boolean = true;
+  @StorageLink('showLinkedNoteName') showLinkedNoteName: boolean = false;
   @StorageLink('capsuleGap') capsuleGap: number = 4;
   @StorageLink('paperRevision') @Watch('onPaperRevision') paperRevision: number = 0;
   @StorageLink('systemColorMode') systemColorMode: number = ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT;
@@ -39,7 +47,7 @@ struct Index {
     PaperStore.initialize(this.hostContext());
     this.refresh();
     if (PaperStore.hasStorageError()) {
-      this.statusMessage = '检测到主数据与备份均异常，已进入数据保护状态，不会用空白数据覆盖原存储。';
+      this.statusMessage = this.localized($r('app.string.status_storage_protect'));
     }
   }
 
@@ -57,6 +65,10 @@ struct Index {
 
   private hostContext(): common.UIAbilityContext {
     return this.getUIContext().getHostContext() as common.UIAbilityContext;
+  }
+
+  private localized(resource: Resource, ...args: Array<string | number>): string {
+    return this.hostContext().resourceManager.getStringSync(resource, ...args);
   }
 
   private refresh(): void {
@@ -103,7 +115,7 @@ struct Index {
 
   private startPaper(paperId: string, command: string = 'show'): void {
     const want: Want = {
-      bundleName: 'com.snownico.papertodo',
+      bundleName: 'com.papertodo.app',
       moduleName: 'entry',
       abilityName: 'PaperAbility',
       parameters: {
@@ -111,9 +123,13 @@ struct Index {
         paperCommand: command
       }
     };
-    this.hostContext().startAbility(want).catch((error: BusinessError): void => {
-      this.statusMessage = '打开纸片失败：' + error.message;
-    });
+    try {
+      this.hostContext().startAbility(want).catch((error: BusinessError): void => {
+        this.statusMessage = this.localized($r('app.string.status_open_paper_failed'), error.message);
+      });
+    } catch (error) {
+      this.statusMessage = this.localized($r('app.string.status_open_paper_failed'), String(error));
+    }
   }
 
   private isPaperOpen(id: string): boolean {
@@ -124,8 +140,8 @@ struct Index {
     const paper: PaperData | null = PaperStore.createPaper(type);
     if (paper === null) {
       this.statusMessage = PaperStore.hasStorageError() ?
-        '数据处于保护状态，暂不允许新建纸片。' :
-        '最多支持 ' + MAX_PAPERS.toString() + ' 张纸片。';
+        this.localized($r('app.string.status_create_blocked')) :
+        this.localized($r('app.string.status_max_papers'), MAX_PAPERS);
       return;
     }
     this.statusMessage = '';
@@ -194,12 +210,37 @@ struct Index {
 
   private themeLabel(): string {
     if (this.theme === THEME_LIGHT) {
-      return '浅色';
+      return this.localized($r('app.string.theme_light'));
     }
     if (this.theme === THEME_DARK) {
-      return '深色';
+      return this.localized($r('app.string.theme_dark'));
     }
-    return '跟随系统';
+    return this.localized($r('app.string.theme_system'));
+  }
+
+  private cycleColorScheme(): void {
+    if (this.colorScheme === COLOR_SCHEME_WARM) {
+      PaperStore.setColorScheme(COLOR_SCHEME_INK);
+    } else if (this.colorScheme === COLOR_SCHEME_INK) {
+      PaperStore.setColorScheme(COLOR_SCHEME_FOREST);
+    } else if (this.colorScheme === COLOR_SCHEME_FOREST) {
+      PaperStore.setColorScheme(COLOR_SCHEME_ROSE);
+    } else {
+      PaperStore.setColorScheme(COLOR_SCHEME_WARM);
+    }
+  }
+
+  private colorSchemeLabel(): string {
+    if (this.colorScheme === COLOR_SCHEME_INK) {
+      return this.localized($r('app.string.scheme_ink'));
+    }
+    if (this.colorScheme === COLOR_SCHEME_FOREST) {
+      return this.localized($r('app.string.scheme_forest'));
+    }
+    if (this.colorScheme === COLOR_SCHEME_ROSE) {
+      return this.localized($r('app.string.scheme_rose'));
+    }
+    return this.localized($r('app.string.scheme_warm'));
   }
 
   private cycleMarkdownMode(): void {
@@ -214,12 +255,12 @@ struct Index {
 
   private markdownLabel(): string {
     if (this.markdownRenderMode === MARKDOWN_OFF) {
-      return '不启用';
+      return this.localized($r('app.string.markdown_off'));
     }
     if (this.markdownRenderMode === MARKDOWN_BASIC) {
-      return '启用';
+      return this.localized($r('app.string.markdown_basic'));
     }
-    return '增强';
+    return this.localized($r('app.string.markdown_enhanced'));
   }
 
   private toggleCapsule(): void {
@@ -244,19 +285,35 @@ struct Index {
 
   private todoVisualSizeLabel(): string {
     if (this.todoVisualSize === TODO_VISUAL_SMALL) {
-      return '小';
+      return this.localized($r('app.string.size_small'));
     }
     if (this.todoVisualSize === TODO_VISUAL_LARGE) {
-      return '大';
+      return this.localized($r('app.string.size_large'));
     }
     if (this.todoVisualSize === TODO_VISUAL_XLARGE) {
-      return '特大';
+      return this.localized($r('app.string.size_xlarge'));
     }
-    return '中';
+    return this.localized($r('app.string.size_medium'));
+  }
+
+  private stateLabel(enabled: boolean): string {
+    return this.localized(enabled ? $r('app.string.state_on') : $r('app.string.state_off'));
   }
 
   private toggleAutoBottomCompleted(): void {
     PaperStore.setAutoBottomCompleted(!this.autoBottomCompleted);
+  }
+
+  private toggleAutoClearCompleted(): void {
+    PaperStore.setAutoClearCompletedTodos(!this.autoClearCompletedTodos);
+  }
+
+  private toggleTodoNoteLinks(): void {
+    PaperStore.setEnableTodoNoteLinks(!this.enableTodoNoteLinks);
+  }
+
+  private toggleLinkedNoteName(): void {
+    PaperStore.setShowLinkedNoteName(!this.showLinkedNoteName);
   }
 
   private cycleCapsuleGap(): void {
@@ -271,26 +328,39 @@ struct Index {
 
   private restoreBackup(): void {
     PaperStore.flushNow();
+    if (!PaperStore.hasValidBackup()) {
+      this.statusMessage = this.localized($r('app.string.status_no_backup'));
+      return;
+    }
+
     const current: PaperData[] = PaperStore.listPapers();
     for (let i: number = 0; i < current.length; i++) {
       if (this.isPaperOpen(current[i].id)) {
         this.startPaper(current[i].id, 'close');
       }
     }
-    if (!PaperStore.restoreBackup()) {
-      this.statusMessage = '没有可恢复的有效备份';
-      return;
-    }
-    this.statusMessage = '已恢复上一份成功保存的自动备份';
-    this.refresh();
+    this.statusMessage = this.localized($r('app.string.status_switch_backup'));
+
     setTimeout((): void => {
+      if (!PaperStore.restoreBackup()) {
+        this.statusMessage = this.localized($r('app.string.status_restore_failed'));
+        for (let i: number = 0; i < current.length; i++) {
+          if (current[i].isVisible) {
+            this.startPaper(current[i].id, 'show');
+          }
+        }
+        return;
+      }
+
+      this.statusMessage = this.localized($r('app.string.status_restore_success'));
+      this.refresh();
       const restored: PaperData[] = PaperStore.listPapers();
       for (let i: number = 0; i < restored.length; i++) {
         if (restored[i].isVisible) {
           this.startPaper(restored[i].id, 'show');
         }
       }
-    }, 180);
+    }, 220);
   }
 
   private paperTitle(paper: PaperData): string {
@@ -299,31 +369,32 @@ struct Index {
     }
     if (paper.type === PAPER_TYPE_NOTE) {
       const firstLine: string = paper.content.split('\n')[0].trim();
-      return firstLine.length > 0 ? firstLine : '未命名笔记';
+      return firstLine.length > 0 ? firstLine : this.localized($r('app.string.untitled_note'));
     }
     for (let i: number = 0; i < paper.items.length; i++) {
       if (paper.items[i].text.trim().length > 0) {
         return paper.items[i].text.trim();
       }
     }
-    return '未命名待办';
+    return this.localized($r('app.string.untitled_todo'));
   }
 
   private paperMeta(paper: PaperData): string {
     const parts: string[] = [];
-    parts.push(paper.type === PAPER_TYPE_NOTE ? '笔记纸' : '待办纸');
-    parts.push(paper.isVisible ? '显示' : '隐藏');
+    parts.push(this.localized(paper.type === PAPER_TYPE_NOTE ?
+      $r('app.string.meta_note_paper') : $r('app.string.meta_todo_paper')));
+    parts.push(this.localized(paper.isVisible ? $r('app.string.meta_visible') : $r('app.string.meta_hidden')));
     if (paper.alwaysOnTop) {
-      parts.push('置顶');
+      parts.push(this.localized($r('app.string.meta_topmost')));
     }
     if (paper.isCollapsed) {
-      parts.push('胶囊');
+      parts.push(this.localized($r('app.string.meta_capsule')));
     }
     return parts.join(' · ');
   }
 
   @Builder
-  private SettingButton(label: string, action: () => void) {
+  private SettingButton(label: ResourceStr, action: () => void) {
     Button(label)
       .height(34)
       .fontSize(11)
@@ -343,21 +414,21 @@ struct Index {
             .fontSize(30)
             .fontWeight(FontWeight.Medium)
             .fontColor(this.textColor())
-          Text('纸片控制中心 · 基础行为已按 3.x 经验收敛')
+          Text($r('app.string.manager_subtitle'))
             .fontSize(12)
             .fontColor(this.mutedColor())
             .margin({ top: 4 })
         }
         .alignItems(HorizontalAlign.Start)
         Blank()
-        Button('☑ 新建待办')
+        Button($r('app.string.new_todo'))
           .height(40)
           .fontSize(13)
           .fontColor(this.primaryButtonTextColor())
           .backgroundColor(this.primaryButtonColor())
           .borderRadius(10)
           .onClick((): void => this.createPaper(PAPER_TYPE_TODO))
-        Button('✎ 新建笔记')
+        Button($r('app.string.new_note'))
           .height(40)
           .fontSize(13)
           .fontColor(this.primaryButtonTextColor())
@@ -369,16 +440,16 @@ struct Index {
       .width('100%')
 
       Row({ space: 8 }) {
-        Button('显示全部')
+        Button($r('app.string.show_all'))
           .height(36)
           .fontSize(12)
           .onClick((): void => this.showAll())
-        Button('隐藏全部')
+        Button($r('app.string.hide_all'))
           .height(36)
           .fontSize(12)
           .onClick((): void => this.hideAll())
         Blank()
-        Button('恢复备份')
+        Button($r('app.string.restore_backup'))
           .height(36)
           .fontSize(12)
           .fontColor(this.mutedColor())
@@ -389,14 +460,25 @@ struct Index {
       .margin({ top: 16 })
 
       Flex({ wrap: FlexWrap.Wrap }) {
-        this.SettingButton('主题：' + this.themeLabel(), (): void => this.cycleTheme())
-        this.SettingButton('Markdown：' + this.markdownLabel(), (): void => this.cycleMarkdownMode())
-        this.SettingButton('胶囊：' + (this.useCapsuleMode ? '开启' : '关闭'), (): void => this.toggleCapsule())
-        this.SettingButton('自动贴边：' + (this.useDeepCapsuleMode ? '开启' : '关闭'), (): void => this.toggleDeepCapsule())
-        this.SettingButton('待办大小：' + this.todoVisualSizeLabel(), (): void => this.cycleTodoVisualSize())
-        this.SettingButton('完成项置底：' + (this.autoBottomCompleted ? '开启' : '关闭'),
+        this.SettingButton($r('app.string.setting_theme', this.themeLabel()), (): void => this.cycleTheme())
+        this.SettingButton($r('app.string.setting_color_scheme', this.colorSchemeLabel()), (): void => this.cycleColorScheme())
+        this.SettingButton($r('app.string.setting_markdown', this.markdownLabel()), (): void => this.cycleMarkdownMode())
+        this.SettingButton($r('app.string.setting_todo_size', this.todoVisualSizeLabel()), (): void => this.cycleTodoVisualSize())
+        this.SettingButton($r('app.string.setting_completed_bottom', this.stateLabel(this.autoBottomCompleted)),
           (): void => this.toggleAutoBottomCompleted())
-        this.SettingButton('胶囊间距：' + this.capsuleGap.toString(), (): void => this.cycleCapsuleGap())
+        this.SettingButton($r('app.string.setting_clear_completed', this.stateLabel(this.autoClearCompletedTodos)),
+          (): void => this.toggleAutoClearCompleted())
+        this.SettingButton($r('app.string.setting_todo_note_links', this.stateLabel(this.enableTodoNoteLinks)),
+          (): void => this.toggleTodoNoteLinks())
+        if (this.enableTodoNoteLinks) {
+          this.SettingButton($r('app.string.setting_show_linked_note_title', this.stateLabel(this.showLinkedNoteName)),
+            (): void => this.toggleLinkedNoteName())
+        }
+        this.SettingButton($r('app.string.setting_capsule', this.stateLabel(this.useCapsuleMode)),
+          (): void => this.toggleCapsule())
+        this.SettingButton($r('app.string.setting_auto_edge', this.stateLabel(this.useDeepCapsuleMode)),
+          (): void => this.toggleDeepCapsule())
+        this.SettingButton($r('app.string.setting_capsule_gap', this.capsuleGap), (): void => this.cycleCapsuleGap())
       }
       .width('100%')
       .margin({ top: 10 })
@@ -411,12 +493,12 @@ struct Index {
 
       if (this.papers.length === 0) {
         Column() {
-          Text(PaperStore.hasStorageError() ? '数据保护模式' : '桌面上还没有纸片')
+          Text(PaperStore.hasStorageError() ?
+            $r('app.string.empty_storage_protection') : $r('app.string.empty_no_papers'))
             .fontSize(18)
             .fontColor(this.textColor())
           Text(PaperStore.hasStorageError() ?
-            '原数据未被覆盖。请先尝试恢复备份。' :
-            '新建一张待办纸或笔记纸即可开始。')
+            $r('app.string.empty_storage_protection_hint') : $r('app.string.empty_no_papers_hint'))
             .fontSize(13)
             .fontColor(this.mutedColor())
             .margin({ top: 8 })
@@ -446,26 +528,26 @@ struct Index {
                 }
                 .layoutWeight(1)
                 .alignItems(HorizontalAlign.Start)
-                Button(paper.isVisible ? '聚焦' : '显示')
+                Button(paper.isVisible ? $r('app.string.focus') : $r('app.string.show'))
                   .height(32)
                   .fontSize(11)
                   .onClick((): void => this.showPaper(paper))
                 if (paper.isVisible) {
-                  Button('隐藏')
+                  Button($r('app.string.hide'))
                     .height(32)
                     .fontSize(11)
                     .margin({ left: 6 })
                     .onClick((): void => this.hidePaper(paper))
                 }
                 if (this.confirmDeleteId === paper.id) {
-                  Button('取消')
+                  Button($r('app.string.cancel'))
                     .height(32)
                     .fontSize(11)
                     .margin({ left: 6 })
                     .onClick((): void => {
                       this.confirmDeleteId = '';
                     })
-                  Button('确认删除')
+                  Button($r('app.string.confirm_delete'))
                     .height(32)
                     .fontSize(11)
                     .fontColor('#FFFFFF')
@@ -498,11 +580,16 @@ struct Index {
         .scrollBar(BarState.Off)
       }
 
-      Text('编辑先更新内存；空闲约 1 秒落盘，持续输入最长约 10 秒强制保存，并保留上一份成功状态。')
+      Text($r('app.string.manager_tip_todo'))
         .width('100%')
         .fontSize(11)
         .fontColor(this.mutedColor())
         .margin({ top: 8 })
+      Text($r('app.string.manager_tip_save'))
+        .width('100%')
+        .fontSize(11)
+        .fontColor(this.mutedColor())
+        .margin({ top: 3 })
     }
     .width('100%')
     .height('100%')

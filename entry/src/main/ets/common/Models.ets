@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION: number = 2;
+export const SCHEMA_VERSION: number = 4;
 
 export const PAPER_TYPE_TODO: string = 'todo';
 export const PAPER_TYPE_NOTE: string = 'note';
@@ -6,6 +6,11 @@ export const PAPER_TYPE_NOTE: string = 'note';
 export const THEME_SYSTEM: string = 'system';
 export const THEME_LIGHT: string = 'light';
 export const THEME_DARK: string = 'dark';
+
+export const COLOR_SCHEME_WARM: string = 'warm';
+export const COLOR_SCHEME_INK: string = 'ink';
+export const COLOR_SCHEME_FOREST: string = 'forest';
+export const COLOR_SCHEME_ROSE: string = 'rose';
 
 export const MARKDOWN_OFF: string = 'off';
 export const MARKDOWN_BASIC: string = 'basic';
@@ -19,6 +24,7 @@ export const TODO_VISUAL_XLARGE: string = 'xlarge';
 export const EDGE_SIDE_RIGHT: string = 'right';
 export const DEFAULT_DISPLAY_ID: string = 'default';
 
+// Paper / floating capsule geometry is persisted in vp. Convert to physical px only at Window API boundaries.
 export const PAPER_MIN_WIDTH: number = 220;
 export const PAPER_MIN_HEIGHT: number = 160;
 export const TODO_DEFAULT_WIDTH: number = 280;
@@ -32,14 +38,22 @@ export const CAPSULE_GAP_DEFAULT: number = 4;
 export const MAX_PAPERS: number = 100;
 export const TITLE_MAX_LENGTH: number = 20;
 export const TODO_PASTE_MAX_ITEMS: number = 200;
-export const TODO_ITEM_MAX_LENGTH: number = 2000;
+export const TODO_ITEM_MAX_LENGTH: number = 5000;
+export const TODO_HISTORY_LIMIT: number = 100;
 export const NOTE_MAX_LENGTH: number = 200000;
+export const NOTE_ZOOM_DEFAULT: number = 1;
+export const NOTE_ZOOM_MIN: number = 0.5;
+export const NOTE_ZOOM_MAX: number = 1.5;
+export const NOTE_ZOOM_STEP: number = 0.1;
 
 export interface PaperItem {
   id: string;
   text: string;
   done: boolean;
   order: number;
+
+  // v2.x: a todo item may point at one note paper. Undefined means unlinked.
+  linkedNoteId?: string;
 }
 
 export interface PaperData {
@@ -47,11 +61,13 @@ export interface PaperData {
   type: string;
   title: string;
 
+  // Logical geometry in vp.
   expandedX: number;
   expandedY: number;
   expandedWidth: number;
   expandedHeight: number;
 
+  // Floating capsule logical position in vp. Edge-docked X/Y are derived, not persisted truth.
   capsuleX: number;
   capsuleY: number;
   edgeSide: string;
@@ -63,10 +79,12 @@ export interface PaperData {
   isCollapsed: boolean;
   items: PaperItem[];
   content: string;
+  // Optional for backward-compatible v2.2 note zoom persistence. Missing values mean 100%.
+  textZoom?: number;
   createdAt: number;
   updatedAt: number;
 
-  // v1 迁移字段。新代码不再写入这些值。
+  // v1 migration fields. New code never writes these values.
   x?: number;
   y?: number;
   width?: number;
@@ -78,10 +96,14 @@ export interface AppState {
   initialized: boolean;
   papers: PaperData[];
   theme: string;
+  colorScheme: string;
   markdownRenderMode: string;
   useCapsuleMode: boolean;
   useDeepCapsuleMode: boolean;
   todoVisualSize: string;
   autoBottomCompleted: boolean;
+  autoClearCompletedTodos: boolean;
+  enableTodoNoteLinks: boolean;
+  showLinkedNoteName: boolean;
   capsuleGap: number;
 }

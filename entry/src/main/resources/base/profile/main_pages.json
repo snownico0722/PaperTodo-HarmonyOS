@@ -1,6 +1,9 @@
 {
   "src": [
+    "pages/Host",
     "pages/Index",
-    "pages/Paper"
+    "pages/Paper",
+    "pages/PaperDesktop",
+    "pages/StatusBarPage"
   ]
 }

@@ -1,6 +1,6 @@
 {
   "app": {
-    "bundleName": "com.snownico.papertodo",
+    "bundleName": "com.papertodo.app",
     "vendor": "snownico0722",
     "versionCode": 1000000,
     "versionName": "1.0.0",
