@@ -3,6 +3,10 @@ import { preferences } from '@kit.ArkData';
 import {
   AppState,
   CAPSULE_GAP_DEFAULT,
+  COLOR_SCHEME_FOREST,
+  COLOR_SCHEME_INK,
+  COLOR_SCHEME_ROSE,
+  COLOR_SCHEME_WARM,
   DEFAULT_DISPLAY_ID,
   EDGE_SIDE_RIGHT,
   MARKDOWN_BASIC,
@@ -238,6 +242,17 @@ class PaperStoreImpl {
   setTheme(theme: string): void {
     const state: AppState = this.ensureState();
     state.theme = theme === THEME_LIGHT || theme === THEME_DARK ? theme : THEME_SYSTEM;
+    this.requestSave(true);
+    this.publishSettings();
+  }
+
+  setColorScheme(scheme: string): void {
+    const state: AppState = this.ensureState();
+    if (scheme === COLOR_SCHEME_INK || scheme === COLOR_SCHEME_FOREST || scheme === COLOR_SCHEME_ROSE) {
+      state.colorScheme = scheme;
+    } else {
+      state.colorScheme = COLOR_SCHEME_WARM;
+    }
     this.requestSave(true);
     this.publishSettings();
   }
@@ -627,6 +642,10 @@ class PaperStoreImpl {
     state.schemaVersion = SCHEMA_VERSION;
     state.initialized = true;
     state.theme = state.theme === THEME_LIGHT || state.theme === THEME_DARK ? state.theme : THEME_SYSTEM;
+    if (state.colorScheme !== COLOR_SCHEME_INK && state.colorScheme !== COLOR_SCHEME_FOREST &&
+      state.colorScheme !== COLOR_SCHEME_ROSE) {
+      state.colorScheme = COLOR_SCHEME_WARM;
+    }
     if (state.markdownRenderMode !== MARKDOWN_OFF && state.markdownRenderMode !== MARKDOWN_BASIC) {
       state.markdownRenderMode = MARKDOWN_ENHANCED;
     }
@@ -882,6 +901,7 @@ class PaperStoreImpl {
       initialized: true,
       papers: [firstPaper],
       theme: THEME_SYSTEM,
+      colorScheme: COLOR_SCHEME_WARM,
       markdownRenderMode: MARKDOWN_ENHANCED,
       useCapsuleMode: true,
       useDeepCapsuleMode: true,
@@ -900,6 +920,7 @@ class PaperStoreImpl {
       initialized: false,
       papers: [],
       theme: THEME_SYSTEM,
+      colorScheme: COLOR_SCHEME_WARM,
       markdownRenderMode: MARKDOWN_ENHANCED,
       useCapsuleMode: true,
       useDeepCapsuleMode: true,
@@ -922,6 +943,7 @@ class PaperStoreImpl {
   private publishSettings(): void {
     const state: AppState = this.ensureState();
     AppStorage.setOrCreate<string>('theme', state.theme);
+    AppStorage.setOrCreate<string>('colorScheme', state.colorScheme);
     AppStorage.setOrCreate<string>('markdownRenderMode', state.markdownRenderMode);
     AppStorage.setOrCreate<boolean>('useCapsuleMode', state.useCapsuleMode);
     AppStorage.setOrCreate<boolean>('useDeepCapsuleMode', state.useDeepCapsuleMode);
