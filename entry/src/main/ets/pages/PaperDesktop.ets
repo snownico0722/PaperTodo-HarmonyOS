@@ -13,6 +13,7 @@ import { CapsuleMotion } from '../common/CapsuleMotion';
 import {
   CAPSULE_HEIGHT,
   CAPSULE_WIDTH,
+  COLOR_SCHEME_WARM,
   MARKDOWN_BASIC,
   MARKDOWN_ENHANCED,
   MARKDOWN_OFF,
@@ -46,6 +47,7 @@ import {
   MD_KIND_RULE,
   parseMarkdownLines
 } from '../common/MarkdownLite';
+import { PaperPalette, paperPalette } from '../common/PaperPalette';
 import { PaperStore } from '../common/PaperStore';
 import { cloneTodoItems, TodoHistory } from '../common/TodoHistory';
 import {
@@ -72,6 +74,7 @@ struct PaperDesktop {
   @LocalStorageLink('windowWidthVp') windowWidthVp: number = 320;
   @LocalStorageLink('windowHeightVp') windowHeightVp: number = 360;
   @StorageLink('theme') theme: string = THEME_SYSTEM;
+  @StorageLink('colorScheme') colorScheme: string = COLOR_SCHEME_WARM;
   @StorageLink('markdownRenderMode') @Watch('onMarkdownModeChanged') markdownRenderMode: string = MARKDOWN_ENHANCED;
   @StorageLink('useCapsuleMode') useCapsuleMode: boolean = true;
   @StorageLink('useDeepCapsuleMode') @Watch('onDeepCapsuleModeChanged') useDeepCapsuleMode: boolean = true;
@@ -248,24 +251,36 @@ struct PaperDesktop {
     return this.systemColorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
   }
 
+  private palette(): PaperPalette {
+    return paperPalette(this.colorScheme, this.isDark());
+  }
+
   private paperColor(): string {
-    return this.isDark() ? '#2C2A24' : '#FFF4C7';
+    return this.palette().paper;
   }
 
   private textColor(): string {
-    return this.isDark() ? '#F2EBD7' : '#28251F';
+    return this.palette().text;
   }
 
   private mutedColor(): string {
-    return this.isDark() ? '#AFA895' : '#746D5D';
+    return this.palette().muted;
   }
 
   private paperBorderColor(): string {
-    return this.isDark() ? '#565044' : '#D8CDA5';
+    return this.palette().border;
   }
 
   private inputColor(): string {
-    return this.isDark() ? '#39362F' : '#FFFDF4';
+    return this.palette().code;
+  }
+
+  private activeColor(): string {
+    return this.palette().active;
+  }
+
+  private dangerColor(): string {
+    return this.palette().danger;
   }
 
   private titleOrFallback(): string {
@@ -1171,7 +1186,7 @@ struct PaperDesktop {
   private linkButtonLabel(item: PaperItem): string {
     const note: PaperData | null = this.linkedNote(item);
     if (note === null) {
-      return '链';
+      return '🔗';
     }
     if (!this.showLinkedNoteName) {
       return '🔗';
@@ -1508,7 +1523,7 @@ struct PaperDesktop {
         .width(this.deleteConfirm ? 36 : 26)
         .height(30)
         .fontSize(12)
-        .fontColor(this.deleteConfirm ? '#B42318' : this.mutedColor())
+        .fontColor(this.deleteConfirm ? this.dangerColor() : this.mutedColor())
         .backgroundColor(Color.Transparent)
         .onClick((): void => this.deletePaper())
     }
@@ -1643,13 +1658,13 @@ struct PaperDesktop {
       Row() {
         Text(this.todoDragDeleteArmed ? $r('app.string.drag_release_delete') : $r('app.string.drag_to_delete'))
           .fontSize(12)
-          .fontColor(this.todoDragDeleteArmed ? '#FFFFFF' : '#B42318')
+          .fontColor(this.todoDragDeleteArmed ? '#FFFFFF' : this.dangerColor())
       }
       .width('100%')
       .height(42)
       .justifyContent(FlexAlign.Center)
-      .backgroundColor(this.todoDragDeleteArmed ? '#B42318' : this.inputColor())
-      .border({ width: 1, color: '#B42318' })
+      .backgroundColor(this.todoDragDeleteArmed ? this.dangerColor() : this.inputColor())
+      .border({ width: 1, color: this.dangerColor() })
       .borderRadius(8)
       .margin({ left: 8, right: 8, bottom: 8 })
     } else {
@@ -1734,7 +1749,7 @@ struct PaperDesktop {
                   .constraintSize({ minWidth: 28, maxWidth: this.showLinkedNoteName ? 88 : 28 })
                   .height(28)
                   .fontSize(9)
-                  .fontColor(this.linkedNoteIsOpen(item) ? '#B7791F' :
+                  .fontColor(this.linkedNoteIsOpen(item) ? this.activeColor() :
                     (this.linkedNote(item) !== null ? this.textColor() : this.mutedColor()))
                   .opacity(this.linkedNoteIsOpen(item) ? 1 : (this.linkedNote(item) !== null ? 0.72 : 0.5))
                   .backgroundColor(Color.Transparent)
