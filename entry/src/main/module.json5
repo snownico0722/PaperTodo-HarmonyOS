@@ -6,8 +6,6 @@
     "mainElement": "EntryAbility",
     "srcEntry": "./ets/abilitystage/PaperTodoAbilityStage.ets",
     "deviceTypes": [
-      "phone",
-      "tablet",
       "2in1"
     ],
     "deliveryWithInstall": true,
@@ -18,7 +16,13 @@
         "name": "ohos.permission.WINDOW_TOPMOST"
       },
       {
+        "name": "ohos.permission.SET_WINDOW_TRANSPARENT"
+      },
+      {
         "name": "ohos.permission.FILE_ACCESS_PERSIST"
+      },
+      {
+        "name": "ohos.permission.PREPARE_APP_TERMINATE"
       }
     ],
     "abilities": [
@@ -28,14 +32,15 @@
         "description": "$string:EntryAbility_desc",
         "icon": "$media:app_icon",
         "label": "$string:EntryAbility_label",
+        "startWindow": "$profile:hidden_start_window",
         "startWindowIcon": "$media:app_icon",
-        "startWindowBackground": "$color:start_window_background",
+        "startWindowBackground": "$color:paper_start_window_background",
         "launchType": "singleton",
         "supportWindowMode": [
-          "fullscreen",
-          "split",
           "floating"
         ],
+        "excludeFromDock": true,
+        "removeMissionAfterTerminate": true,
         "exported": true,
         "skills": [
           {
@@ -49,19 +54,104 @@
         ]
       },
       {
+        "name": "ManagerAbility",
+        "srcEntry": "./ets/managerability/ManagerAbility.ets",
+        "description": "$string:EntryAbility_desc",
+        "icon": "$media:app_icon",
+        "label": "$string:EntryAbility_label",
+        "startWindow": "$profile:hidden_start_window",
+        "startWindowIcon": "$media:app_icon",
+        "startWindowBackground": "$color:paper_start_window_background",
+        "launchType": "singleton",
+        "supportWindowMode": [
+          "floating"
+        ],
+        "removeMissionAfterTerminate": true,
+        "exported": false
+      },
+      {
+        "name": "TrayResidentAbility",
+        "srcEntry": "./ets/trayresidentability/TrayResidentAbility.ets",
+        "description": "$string:EntryAbility_desc",
+        "icon": "$media:app_icon",
+        "label": "$string:EntryAbility_label",
+        "startWindow": "$profile:hidden_start_window",
+        "startWindowIcon": "$media:app_icon",
+        "startWindowBackground": "$color:paper_start_window_background",
+        "launchType": "singleton",
+        "supportWindowMode": [
+          "floating"
+        ],
+        "excludeFromDock": true,
+        "removeMissionAfterTerminate": true,
+        "exported": false
+      },
+      {
         "name": "PaperAbility",
         "srcEntry": "./ets/paperability/PaperAbility.ets",
         "description": "$string:EntryAbility_desc",
         "icon": "$media:app_icon",
         "label": "$string:EntryAbility_label",
+        "startWindow": "$profile:hidden_start_window",
         "startWindowIcon": "$media:app_icon",
         "startWindowBackground": "$color:paper_start_window_background",
         "launchType": "specified",
         "supportWindowMode": [
-          "floating",
-          "fullscreen"
+          "floating"
         ],
+        "minWindowWidth": 40,
+        "minWindowHeight": 46,
+        "excludeFromDock": true,
+        "removeMissionAfterTerminate": true,
         "exported": false
+      },
+      {
+        "name": "EdgeCapsuleAbility",
+        "srcEntry": "./ets/edgecapsuleability/EdgeCapsuleAbility.ets",
+        "description": "$string:EntryAbility_desc",
+        "icon": "$media:app_icon",
+        "label": "$string:EntryAbility_label",
+        "startWindow": "$profile:hidden_start_window",
+        "startWindowIcon": "$media:app_icon",
+        "startWindowBackground": "$color:paper_start_window_background",
+        "launchType": "specified",
+        "supportWindowMode": [
+          "floating"
+        ],
+        "minWindowWidth": 40,
+        "minWindowHeight": 46,
+        "excludeFromDock": true,
+        "removeMissionAfterTerminate": true,
+        "exported": false
+      },
+      {
+        "name": "MasterCapsuleAbility",
+        "srcEntry": "./ets/mastercapsuleability/MasterCapsuleAbility.ets",
+        "description": "$string:EntryAbility_desc",
+        "icon": "$media:app_icon",
+        "label": "$string:EntryAbility_label",
+        "startWindow": "$profile:hidden_start_window",
+        "startWindowIcon": "$media:app_icon",
+        "startWindowBackground": "$color:paper_start_window_background",
+        "launchType": "singleton",
+        "supportWindowMode": [
+          "floating"
+        ],
+        "minWindowWidth": 40,
+        "minWindowHeight": 46,
+        "excludeFromDock": true,
+        "removeMissionAfterTerminate": true,
+        "exported": false
+      }
+    ],
+    "extensionAbilities": [
+      {
+        "name": "PaperStatusBarAbility",
+        "icon": "$media:app_icon",
+        "description": "$string:EntryAbility_desc",
+        "type": "statusBarView",
+        "exported": true,
+        "srcEntry": "./ets/statusbarviewability/PaperStatusBarAbility.ets"
       }
     ]
   }
