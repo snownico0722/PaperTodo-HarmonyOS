@@ -1649,7 +1649,11 @@ struct PaperDesktop {
                   }
                 })
                 .onTextSelectionChange((start: number, end: number): void => this.updateTodoSelection(item.id, start, end))
-                .onPaste((pasteValue: string): boolean => this.handleTodoPaste(item.id, pasteValue))
+                .onPaste((pasteValue: string, event: PasteEvent): void => {
+                  if (this.handleTodoPaste(item.id, pasteValue) && event.preventDefault) {
+                    event.preventDefault();
+                  }
+                })
                 .onSubmit((): void => this.insertTodoAfter(item.id))
                 .onKeyEvent((event?: KeyEvent): void => this.handleTodoKey(item.id, event))
 
