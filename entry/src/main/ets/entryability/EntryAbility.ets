@@ -8,6 +8,7 @@ import {
 import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
+import { GlobalHotkeys } from '../common/GlobalHotkeys';
 import { PaperData } from '../common/Models';
 import { PaperStore } from '../common/PaperStore';
 
@@ -15,6 +16,8 @@ const DOMAIN: number = 0x0000;
 const TAG: string = 'PaperTodo';
 
 export default class EntryAbility extends UIAbility {
+  private managerMinimizeTimer: number = -1;
+
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     PaperStore.initialize(this.context);
     AppStorage.setOrCreate<number>('systemColorMode', this.context.config.colorMode ??
@@ -22,20 +25,21 @@ export default class EntryAbility extends UIAbility {
   }
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    this.context.showAbility().catch((error: BusinessError): void => {
-      hilog.warn(DOMAIN, TAG, 'show manager failed: %{public}s', error.message);
-    });
+    this.clearManagerMinimizeTimer();
+    hilog.info(DOMAIN, TAG, '%{public}s', 'Manager brought to foreground');
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
+    this.clearManagerMinimizeTimer();
     hilog.info(DOMAIN, TAG, '%{public}s', 'Window stage created');
+    GlobalHotkeys.configure(this.context);
 
     windowStage.loadContent('pages/Index', (err: BusinessError): void => {
       if (err.code !== 0) {
         hilog.error(DOMAIN, TAG, 'Failed to load content. Cause: %{public}s', JSON.stringify(err));
         return;
       }
-      this.restoreVisiblePapers();
+      this.restoreVisiblePapers(windowStage);
     });
   }
 
@@ -44,16 +48,19 @@ export default class EntryAbility extends UIAbility {
   }
 
   onDestroy(): void {
+    this.clearManagerMinimizeTimer();
+    GlobalHotkeys.shutdown();
     PaperStore.flushNow();
   }
 
   onConfigurationUpdate(config: Configuration): void {
+    PaperStore.refreshSystemLanguage();
     if (config.colorMode !== undefined) {
       AppStorage.setOrCreate<number>('systemColorMode', config.colorMode);
     }
   }
 
-  private restoreVisiblePapers(): void {
+  private restoreVisiblePapers(windowStage: window.WindowStage): void {
     const papers: PaperData[] = PaperStore.listPapers();
     let started: number = 0;
     for (let i: number = 0; i < papers.length; i++) {
@@ -65,11 +72,23 @@ export default class EntryAbility extends UIAbility {
     }
 
     if (deviceInfo.deviceType === '2in1' && started > 0) {
-      setTimeout((): void => {
-        this.context.hideAbility().catch((error: BusinessError): void => {
-          hilog.warn(DOMAIN, TAG, 'hide manager failed: %{public}s', error.message);
-        });
+      this.managerMinimizeTimer = setTimeout((): void => {
+        this.managerMinimizeTimer = -1;
+        try {
+          windowStage.getMainWindowSync().minimize().catch((error: BusinessError): void => {
+            hilog.warn(DOMAIN, TAG, 'minimize manager failed: %{public}s', error.message);
+          });
+        } catch (error) {
+          hilog.warn(DOMAIN, TAG, 'get manager window failed: %{public}s', String(error));
+        }
       }, 300);
+    }
+  }
+
+  private clearManagerMinimizeTimer(): void {
+    if (this.managerMinimizeTimer >= 0) {
+      clearTimeout(this.managerMinimizeTimer);
+      this.managerMinimizeTimer = -1;
     }
   }
 

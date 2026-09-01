@@ -16,6 +16,9 @@
     "requestPermissions": [
       {
         "name": "ohos.permission.WINDOW_TOPMOST"
+      },
+      {
+        "name": "ohos.permission.FILE_ACCESS_PERSIST"
       }
     ],
     "abilities": [
@@ -52,7 +55,7 @@
         "icon": "$media:app_icon",
         "label": "$string:EntryAbility_label",
         "startWindowIcon": "$media:app_icon",
-        "startWindowBackground": "$color:start_window_background",
+        "startWindowBackground": "$color:paper_start_window_background",
         "launchType": "specified",
         "supportWindowMode": [
           "floating",
