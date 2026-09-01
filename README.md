@@ -1,169 +1,211 @@
 # PaperTodo HarmonyOS
 
-PaperTodo 的 HarmonyOS 原生版本，使用 ArkTS + ArkUI 重写。当前功能面已达到 Windows [PaperTodo v1.6](https://github.com/snownico0722/PaperTodo/releases/tag/v1.6) 的主体范围，同时直接吸收 2.x / 3.x 已验证的基础设计经验，避免重走早期版本的数据、保存与胶囊状态弯路。
+PaperTodo 的 HarmonyOS 原生版本，使用 ArkTS + ArkUI 重写。当前代码以 Windows [PaperTodo](https://github.com/snownico0722/PaperTodo) 3.x 的成熟交互为参考，继续补齐 3.3 时代的纸片、待办、笔记和胶囊体验；HarmonyOS 版本采用单屏、单右侧队列方案，不以逐 API、逐像素复刻 WPF 为目标。
 
 ## 当前状态
 
-- HarmonyOS Stage 模型
-- HarmonyOS SDK `6.1.0 / API 23`
-- `phone` / `tablet` / `2in1` 工程目标
-- GitHub Actions 已真实通过 `assembleHap` 与 `assembleApp`
-- 普通代码 PR 同时验证 HAP 编译与完整 APP 打包
-- 可生成 unsigned `.hap`、`.app`、`SHA256SUMS` 和完整 ZIP
-- HarmonyOS PC / 2in1 的实际窗口行为仍需要真机验证
+- HarmonyOS Stage 模型，`EntryAbility` 作为纸片控制中心，每张纸片由独立的 `PaperAbility` 窗口承载
+- HarmonyOS SDK `6.1.0(23)` / API 23
+- 工程声明支持 `phone` / `tablet` / `2in1`，自由窗口和桌面胶囊的主要验收场景是 PC / 2in1
+- GitHub Actions 已配置 unsigned HAP 编译和 unsigned APP 打包
+- ArkTS 逻辑测试覆盖 Markdown 块 / 行内解析、Note 选区编辑、Todo 撤销 / 重做快照、本地化目录、Unicode 安全截断和图片托管文件清理规则
+- 多窗口、Topmost、极小窗口、Hover 和文件提供方行为仍需在目标设备上持续真机验证
+
+## 3.3 对齐范围
+
+| 能力 | HarmonyOS 当前取舍 |
+| --- | --- |
+| 普通悬浮胶囊 | 已实现 |
+| 单屏右侧深胶囊队列 | 已实现 |
+| 右侧队列纵向拖动排序 | 已实现 |
+| 胶囊动态宽度、Hover 滑出、折叠 / 展开动画 | 已实现 |
+| 左右换边 | 不移植 |
+| 主胶囊 | 不移植 |
+| 从队列横向拖出为普通胶囊 | 不移植 |
+| 多屏、多队列、跨显示器迁移 | 不移植 |
+| Windows 托盘、开机启动、CLI、全屏避让、PowerShell 脚本胶囊 | 平台专属，不移植 |
+
+这张表只描述当前生产代码，不代表已完成 Windows 3.3 的全部功能等价或真机验收。
 
 ## 已实现能力
 
 ### 纸片与数据
 
-- Todo / Note 两类纸片
-- 多纸片，每张纸独立 `PaperAbility` 窗口
-- 同一 `paperId` 复用同一个 `specified` UIAbility 实例
-- `schemaVersion` 数据版本，为后续迁移保留正式入口
-- 正确区分首次启动与合法的“0 张纸片”状态
-- 主数据和备份都损坏时进入数据保护模式，拒绝用默认纸片覆盖原存储
-- 旧 v1 `x / y / width / height` 自动迁移到新版几何模型
-- 最多 100 张纸片
+- Todo / Note 两类纸片，最多 100 张
+- 每个 `paperId` 复用同一个 `specified` UIAbility 实例
+- `schemaVersion: 4` 数据模型，包含纸片、设置、Todo 关联和笔记图片元数据
+- 旧 v1 / v2 像素几何自动迁移为新版 VP 几何；展开态和胶囊态坐标、尺寸分离
+- 正确区分首次启动和合法的“0 张纸片”状态
+- 拒绝覆盖高于当前版本的未来 schema
+- 主数据和备份都损坏时进入数据保护模式，不用默认纸片覆盖原存储
+- 删除纸片时清理其他 Todo 对它的失效关联
+- 标题、Todo、批量粘贴、Note、快启 URI 和图片都设有安全上限；文本截断避免拆开 Unicode 代理对
 
-### 保存策略
+### 保存与恢复
 
-编辑不再每个字符同步写 Preferences：
+编辑不会在每个字符后同步写 Preferences：
 
-- UI 修改立即进入内存状态
+- UI 修改立即进入内存
 - 空闲约 1 秒后保存
 - 持续输入最长约 10 秒强制保存一次
-- 保存失败约 10 秒后自动重试
-- Ability 进入后台或销毁前强制 flush
-- backup 始终保留“上一份成功落盘状态”
-- 控制中心支持手动恢复上一份有效备份
+- 保存失败约 10 秒后重试
+- Ability 进入后台、销毁或执行关键操作前强制 flush
+- backup 保留上一份成功落盘状态
+- 主数据缺失或损坏但 backup 有效时自动恢复，并避免用坏主数据覆盖好备份
+- 控制中心可手动恢复上一份有效备份
 
 ### Todo 纸
 
-- 完成 / 恢复
-- 行内编辑
-- Enter 在当前项后新增
-- 删除
-- 清除已完成
-- List 拖动排序
-- 底部快速添加
-- 多行文本拆分为多项
-- 自动清理常见列表、数字序号、Markdown checkbox 和 `☐ / ☑ / ✓` 前缀
-- 单次多行添加最多 200 条
-- 单项长度保护
-- 待办视觉大小：小 / 中 / 大 / 特大
-- 可选“已完成自动置底”；取消完成时回到未完成区域末尾
+- 完成 / 恢复、行内编辑、Enter 后插入、删除和清除已完成
+- List 原生拖动排序
+- 底部快速添加；多行文本自动拆分为多项
+- 清理常见列表符号、数字序号、Markdown checkbox 和 `☐ / ☑ / ✓` 前缀
+- 单次多行添加最多 200 项，单项最多 2000 个 UTF-16 代码单元
+- 小 / 中 / 大 / 特大四档视觉尺寸，可独立设置文字加粗
+- 可选“完成后自动清除”和“已完成自动置底”
+- 窗口内 100 步整表撤销 / 重做，连续文字编辑在约 800 ms 内合并并提供工具栏按钮；输入框内的 `Ctrl+Z` / `Ctrl+Y` 保留给系统原生逐字段撤销
+- 新增行后自动聚焦，删除后聚焦相邻项，双击文本可全选；每项均有右键菜单，也可用菜单键 / `Shift+F10` 打开，可切换完成状态、管理关联或删除
+- 在至少保留一项时，空白且无关联的 Todo 项支持键盘删除快捷键；`Esc` 可折叠为胶囊
+- Todo 项可关联另一张纸片，再次点击可按设置将已展开的深胶囊纸片收回
+- Todo 项可关联文件快启；除系统选择器外，可直接把 UDMF 文件、文件夹或文件 URI 拖到任意 Todo 行建立快启。2in1 额外提供文件夹选择入口。关联后尝试持久化只读 URI 授权，打开前再次激活授权
+- 纸片关联、文件快启和文件夹快启互斥，失效目标可重新选择或解除
 
-### Note 纸
+### Note 纸与 Markdown
 
-- 编辑 / 浏览双模式
-- 自动保存
+- 编辑 / 浏览双模式和自动保存
 - Markdown 三档：不启用 / 启用 / 增强
-- 轻量渲染标题、列表、引用、代码块、分割线
-- 增强模式清理常见 Markdown inline 标记
-- 工具栏：粗体、斜体、删除线、标题、引用、列表、代码块、链接
-- 笔记总长度保护，避免无界内容直接压入 UI 与 Preferences
+- 轻量逐行预览标题、无序列表、有序列表、引用、代码块、分割线和内部图片
+- 增强模式支持粗体、斜体、删除线、行内代码及嵌套样式；一行内的多个 Markdown 链接和裸 `http(s)` 地址可分别点击，代码内容不会被误判为链接
+- 基础模式保留轻量标记显示；增强模式把受支持的 Markdown 行内标记按独立 Span 呈现，简单 HTML 标记仍走清理后的纯文本回退
+- 工具栏：粗体、斜体、删除线、标题、引用、列表、代码块、链接、图片、经系统授权的图片粘贴和缩放
+- 格式工具作用于当前选区 / 光标并保持 Unicode、CRLF 边界安全；支持 `Ctrl+B`、`Ctrl+I`、`Ctrl+K`
+- 无序列表、有序列表和任务列表按 Enter 自动续写；空列表项按 Enter 结束列表
+- 浏览态点击正文进入编辑；窗口失焦后自动回到浏览态，系统图片选择期间不会误切换
+- 可从宽顶栏、窄窗口操作条或右键菜单把当前内容写入临时 `.md`，再以只读 URI 授权交给系统关联应用打开
+- 每张 Note 独立保存 50%～150% 文字缩放，支持工具栏和 `Ctrl+滚轮`
+- Note 内容上限为 200000 个 UTF-16 代码单元
+
+### 笔记图片
+
+- 三种导入入口：系统文档选择器、向 Note 拖入 UDMF 图片 / 文件 / 文件 URI，以及工具栏 `PasteButton`；选择器和拖入单次最多处理 10 张图片
+- `PasteButton` 只有在系统返回本次授权成功后才读取剪贴板；接受图片 URI 或 PixelMap，不在后台监听、扫描剪贴板
+- 选择器使用扩展名过滤，URI 粘贴先校验受支持的图片扩展名；拖入记录和所有实际导入还会经过图片解码与 MIME 白名单校验
+- URI 文件按 256 KiB 分块复制，并在超过 32 MiB 时立即中止，避免先把无界外部文件完整写入沙箱
+- 所有入口最终都生成应用私有副本，不依赖选择、拖入或粘贴得到的外部 URI 长期有效
+- 导入使用受控随机 ID 和文件名；图片元数据必须属于当前 Note，另一张 Note 不能仅凭内部 ID 引用该附件
+- 校验文件大小、像素尺寸、格式和帧数；需要时读取方向信息并在重编码时校正旋转 / 翻转
+- 浏览模式按显示方向和宽高比预览，限制解码目标尺寸；文件缺失或解码失败时显示可读占位提示
+- 支持内部标记 `![alt|75%](i:image_id)` 和 `![alt](i:image_id){width=75%}`，显示宽度限制在 10%～100%
+- 输入文件上限 32 MiB，边长上限 4096 px，单个落盘文件上限 8 MiB，已登记图片总量上限 120 MiB
+- 开启自动压缩后，超过 8 MiB 或长边超过 2048 px 的单帧图片进入重编码；先限制长边，再逐级降低 JPEG 质量和尺寸，直到不超过 8 MiB 或安全失败
+- 带透明度的图片优先编码为 PNG，不透明图片编码为 JPEG；需要压缩的多帧图片会拒绝重编码，避免静默丢失动画帧
+- 导入取消、组件销毁、内容超限或元数据登记失败时删除本次临时 / 结果文件，不让失效异步任务回写 Note
+- 启动时核对元数据与实际文件，只保留仍由所属 Note 内容引用的有效附件；临时文件立即清理，未被主状态或 backup 保护的托管孤儿文件在至少 24 小时后回收
 
 ### 窗口
 
-- 无系统标题栏
-- 拖动移动
-- 自定义缩放手柄
-- 最小尺寸限制
-- 单纸片 Topmost
-- 隐藏 / 删除
-- 从任意纸片新建 Todo / Note，新纸片默认靠近来源纸片
+- 透明窗口背景、无系统标题栏、自绘圆角 / 边框 / 阴影
+- 拖动移动和自定义缩放手柄；展开纸片最小尺寸 180 × 160 vp
+- 缩放角标设为隐藏时，四边和四角仍保留透明命中区；窄至 180 vp 时标题、拖动区和关联控件会按优先级收缩
+- 按当前显示器可用工作区限制窗口尺寸，并在启动 / 展开时把窗口夹回可见范围
+- 单纸片 Topmost；深胶囊折叠时维持 Topmost
+- 隐藏、二次确认删除，以及从任意纸片新建 Todo / Note
+- 展开纸片和胶囊支持右键菜单；通用项包括置顶、切换主题、折叠 / 展开、隐藏和删除，展开 Note 另有编辑 / 浏览与外部打开
+- 新纸片默认靠近来源纸片，而不是固定出现在左上角
 - 启动时恢复所有可见纸片
-- 启动恢复时会把展开纸片夹回当前显示范围，降低窗口丢到屏幕外的风险
-- 2in1 启动纸片后控制中心尝试自动退到后台
-- 窄纸片按宽度自动隐藏低优先级顶栏按钮，并通过 `⋯` 操作条保留完整入口
-- 标题最多 20 个字符
+- 2in1 启动纸片后，控制中心尝试退到后台
+- 窄纸片隐藏低优先级顶栏按钮，并通过可横向滚动的 `⋯` 操作条保留入口
 
 ### 胶囊
 
-展开纸片和胶囊不再共用一套 `x / y`：
+- 胶囊固定高度 46 vp，默认宽度 108 vp；实际宽度按标题测量并限制在 76～280 vp
+- 展开位置 / 尺寸与胶囊位置 / 宽度独立保存，拖动胶囊不会覆盖展开几何
+- 普通胶囊可自由拖动并保存位置
+- 深胶囊统一进入单屏右侧纵向队列，静止时向右隐藏 28 vp，Hover 时平滑滑出
+- 点击标题区域展开；关闭区隐藏纸片
+- 深胶囊纵向拖动后按目标位置重新排序，取消手势时恢复原位置
+- 展开 / 折叠使用内容淡出缩小、窗口换形、内容淡入恢复的过渡；Hover 动画可关闭，窗口移动动画可被新操作取消
+- 深胶囊贴墙一侧使用直角，外侧保持圆角，使右侧队列与屏幕边缘连续衔接
+- 胶囊间距支持 `0 / 4 / 8` vp
+- 可设置记住展开位置；关闭“记住展开位置”时从右侧队列附近展开并保留 36 vp 边缘间距
+- 可设置关联纸片再次点击收回、Hover 时隐藏关闭按钮，以及边缘标题显示全部或限制为 8 / 12 / 16 字
+- 关闭胶囊模式会实时展开已打开胶囊；关闭深胶囊模式会保留普通胶囊形态和位置
+- 胶囊模式、深胶囊、间距、标题限制、字体和语言变化会同步到已打开的折叠窗口
 
-- 展开态保存 `expandedX / expandedY / expandedWidth / expandedHeight`
-- 胶囊保存独立 `capsuleX / capsuleY`
-- 贴边状态保存 `edgeOrder / edgeSide / edgeDisplayId`
-- 拖动胶囊不会覆盖纸片展开位置
-- 108 × 46 胶囊尺寸
-- 折叠 / 展开
-- 自动排列在屏幕右上区域
-- 右侧半隐藏
-- Hover 滑出
-- 点击恢复纸片
-- 普通悬浮胶囊可独立保存位置
-- 贴边胶囊纵向拖动按队列顺序重排
-- 全局胶囊开关
-- 自动贴边开关
-- 关闭胶囊模式时，已打开胶囊会实时恢复为原展开几何
-- 关闭自动贴边时保留普通胶囊形态和位置
-- 胶囊间距支持 `0 / 4 / 8`
+### 控制中心与视觉设置
 
-### 全局设置
+HarmonyOS 没有 Windows 传统托盘，当前由“纸片控制中心”承担全局入口：
 
-HarmonyOS 没有 Windows 传统托盘，因此当前使用轻量“纸片控制中心”承担全局入口：
+- 新建、聚焦、显示、隐藏、删除 Todo / Note
+- 显示全部 / 隐藏全部，以及恢复自动备份
+- UI 语言：跟随系统 / 简体中文 / English / 日本語 / 한국어
+- 主题：跟随系统 / 浅色 / 深色
+- 暖纸 / 墨 / 林 / 霞四套配色，每套都有浅色和深色调色板
+- Markdown、Todo 尺寸、完成后清除、完成项置底、大图自动压缩、纸片关联和动画设置
+- 默认关闭的“运行期间全局快捷键”开关，以及注册成功、按键冲突、设备不支持和错误状态提示
+- 胶囊模式、右侧深胶囊队列、间距、展开位置、再次点击行为、Hover 关闭区和标题长度设置
+- 内容整体缩放，Note / 标题 / 胶囊字号与粗细，Todo 粗体，缩放角标样式
+- 可分别显示或隐藏纸片顶栏的新建 Todo、新建 Note 和 Markdown 外部打开按钮
 
-- 新建 Todo / Note
-- 显示 / 隐藏单张纸片
-- 显示全部 / 隐藏全部
-- 删除纸片
-- System / Light / Dark 主题
-- Markdown 三档模式
-- 胶囊开关
-- 自动贴边开关
-- 待办视觉大小
-- 已完成自动置底
-- 胶囊间距
-- 自动备份恢复
+### 运行期间全局快捷键
 
-## 从 Windows 2.x / 3.x 提前下放的经验
+- 默认关闭；用户在控制中心基础设置中开启后持久化选择，并尝试一次性注册三组固定快捷键
+- `Ctrl+Alt+P`：显示纸片控制中心
+- `Ctrl+Alt+T`：新建并打开 Todo
+- `Ctrl+Alt+N`：新建并打开 Note
+- 当前注册实现使用左 `Ctrl` + 左 `Alt` 作为前置键，不包含右侧修饰键或可编辑按键映射
+- 注册时设置 `isRepeat: false`，按住按键不会连续触发；关闭开关或销毁 `EntryAbility` 时解除注册
+- 任一组合键被系统 / 其他应用占用、设备不支持或注册异常时，清理本次已注册组合并在控制中心显示对应状态
+- 这不是常驻系统服务：只有 PaperTodo 应用进程仍在运行且注册成功时可用，进程退出后不可用
 
-当前不是照着旧版本逐版移植，而是直接采用成熟后的基础规则：
+## 已知限制
 
-- 不再把 `papers.length === 0` 当成首次启动
-- 不再每个字符同步写盘
-- 展开态与胶囊态几何分离
-- 隐藏、胶囊、贴边状态各自保留语义
-- 新建纸片使用来源位置，而不是永远固定左上角
-- 窄窗口顶栏按优先级收缩，不继续横向堆按钮
-- 对纸片数量、标题、Todo 粘贴和 Note 内容设置安全上限
-- 普通 PR 必须同时通过 Build 与 Package
-
-暂时不下放多屏左右边缘多队列、主胶囊、Windows 全屏避让、图片、文件快启和脚本胶囊。这些要么复杂度较高，要么高度依赖 HarmonyOS PC 实际窗口管理行为。
-
-## 与 Windows 版的平台差异
-
-当前目标是功能等级和成熟行为对齐，而不是逐 API / 逐像素复制 Windows WPF 实现。
-
-尚未等价实现：
-
-- Windows 托盘：改用 HarmonyOS 纸片控制中心
-- Windows 开机启动 / CLI 参数：属于平台专属能力，尚未接入 HarmonyOS 等价机制
-- Todo `Ctrl+Z / Ctrl+Y`
-- 空白 Todo 的 Backspace 快捷删除
-- Todo 拖到专用删除区
-- zh / en / ja / ko 完整本地化
-- 复杂 Markdown inline 样式的 1:1 渲染
-
-尤其需要注意：`WINDOW_TOPMOST`、无边框、自由窗口尺寸、极小胶囊窗口、贴边与 Hover 的代码路径已经通过 API 23 云端真实编译，但这些是窗口管理器的运行时行为，必须在 HarmonyOS PC / 2in1 真机上最终验收。
+- `phone` / `tablet` 虽在工程目标中，但自由窗口、Topmost、极小胶囊窗口和 Hover 的表现由设备形态及窗口管理器决定；桌面行为以 PC / 2in1 真机结果为准。
+- 当前只有默认显示器上的单个右侧队列，不支持多屏、多队列、左右换边、主胶囊或从队列横向拖出。
+- Todo 有 List 排序和删除按钮，但没有 Windows 版“拖到专用删除区”的交互。
+- 文件快启会请求 `FILE_ACCESS_PERSIST` 并尝试持久化只读授权，但系统文档提供方或设备可能拒绝；此时仍保存关联并提示，当前授权失效后需要重新选择。文件夹选择仅在 2in1 暴露，直接拖入则依赖来源应用提供兼容的 UDMF 记录。
+- 图片粘贴只处理经 `PasteButton` 授权得到的图片 URI / PixelMap；拖入能力依赖来源应用提供兼容的 UDMF 记录。当前不解析 HTML / Base64 图片，也不直接渲染网络图片。
+- 删除 Note 会移除主状态中的附件元数据，但为保护自动备份，私有图片文件不会同步立即删除；孤儿文件在后续初始化、超过 24 小时宽限且不再被 backup 引用后才回收。
+- Markdown 是轻量逐行预览，不是完整 CommonMark 引擎；不支持表格、网络图片、完整块级 HTML 或 WPF 渲染的逐像素复刻。
+- 外部打开会交付当前 Markdown 的临时只读副本，不会把外部编辑结果自动同步回纸片；内部 `i:` 图片仍由 PaperTodo 私有托管，外部应用不保证能显示。
+- 运行期间全局快捷键固定为左 `Ctrl` + 左 `Alt` + `P/T/N`，暂不支持自定义；HarmonyOS 设备可能不支持注册或已有按键冲突，不能等同于 Windows 常驻后台热键。
+- Windows 托盘、开机启动、命令行参数、全屏避让、外部编辑器回写和脚本胶囊不提供 HarmonyOS 等价实现。
+- `WINDOW_TOPMOST`、文件选择和打开外部目标均依赖系统能力；编译通过不等于所有设备上的运行时行为一致。
 
 ## 构建
 
-### GitHub Actions
-
-仓库包含两条流水线，普通 PR 两条都会执行：
-
-- **HarmonyOS Build**：执行 `assembleHap`
-- **HarmonyOS Package**：执行 `assembleApp`，收集 `.app` / unsigned `.hap` 并生成校验文件与 ZIP
-
-工具链固定为 HarmonyOS `6.1.0.816`，下载包带 SHA-256 校验并使用 GitHub Actions Cache。
-
 ### DevEco Studio
 
-使用支持 HarmonyOS SDK `6.1.0(23)` 的 DevEco Studio 打开仓库根目录，完成 SDK / ohpm 同步后即可构建。
+使用支持 HarmonyOS SDK `6.1.0(23)` 的 DevEco Studio 打开仓库根目录，完成 SDK / ohpm 同步后构建。仓库不提交签名证书或私钥；安装真机或提交 AppGallery Connect 时需要配置开发者签名。
 
-仓库不会提交签名证书或私钥。CI 当前产物为 **unsigned**；安装真机或提交 AppGallery Connect 时，需要配置开发者签名。
+### 命令行
+
+准备 HarmonyOS Command Line Tools `6.1.0.816`，设置 `OHPM_HOME`、`HOS_SDK_HOME`、`PATH`，并在根目录的 `local.properties` 中配置：
+
+```properties
+hwsdk.dir=/absolute/path/to/command-line-tools/sdk
+```
+
+安装依赖并编译 unsigned HAP：
+
+```bash
+ohpm install
+hvigorw assembleHap --mode module -p product=default -p buildMode=debug --no-daemon
+```
+
+打包 unsigned APP：
+
+```bash
+hvigorw assembleApp --mode project -p product=default -p buildMode=debug -p enableSignTask=false --no-daemon
+```
+
+逻辑测试位于 `entry/src/test/`，可通过 DevEco Studio 的模块测试目标编译和运行。
+
+### GitHub Actions
+
+- **HarmonyOS Build**：main 分支 push、PR 和手动触发时执行 `assembleHap`，上传 unsigned HAP
+- **HarmonyOS Package**：PR、`v*` tag 和手动触发时执行 `assembleApp`，收集 `.app` / unsigned `.hap`、`SHA256SUMS` 和 ZIP
+- CI 工具链固定为 `6.1.0.816`，下载包执行 SHA-256 校验并使用 GitHub Actions Cache
 
 ## 工程结构
 
@@ -171,22 +213,27 @@ HarmonyOS 没有 Windows 传统托盘，因此当前使用轻量“纸片控制�
 PaperTodo-HarmonyOS/
 ├─ AppScope/
 ├─ entry/
-│  └─ src/main/
-│     ├─ ets/
-│     │  ├─ abilitystage/
-│     │  │  └─ PaperTodoAbilityStage.ets
-│     │  ├─ entryability/
-│     │  │  └─ EntryAbility.ets
-│     │  ├─ paperability/
-│     │  │  └─ PaperAbility.ets
-│     │  ├─ common/
-│     │  │  ├─ Models.ets
-│     │  │  ├─ PaperStore.ets
-│     │  │  └─ MarkdownLite.ets
-│     │  └─ pages/
-│     │     ├─ Index.ets
-│     │     └─ Paper.ets
-│     └─ resources/
+│  ├─ src/main/
+│  │  ├─ ets/
+│  │  │  ├─ abilitystage/PaperTodoAbilityStage.ets
+│  │  │  ├─ entryability/EntryAbility.ets
+│  │  │  ├─ paperability/PaperAbility.ets
+│  │  │  ├─ common/
+│  │  │  │  ├─ GlobalHotkeys.ets
+│  │  │  │  ├─ Models.ets
+│  │  │  │  ├─ PaperStore.ets
+│  │  │  │  ├─ MarkdownLite.ets
+│  │  │  │  ├─ NoteEditing.ets
+│  │  │  │  ├─ NoteImageStore.ets
+│  │  │  │  ├─ Strings.ets
+│  │  │  │  ├─ TextSafety.ets
+│  │  │  │  ├─ ThemePalette.ets
+│  │  │  │  └─ TodoHistory.ets
+│  │  │  └─ pages/
+│  │  │     ├─ Index.ets
+│  │  │     └─ Paper.ets
+│  │  └─ resources/
+│  └─ src/test/
 ├─ .github/workflows/
 │  ├─ harmonyos-build.yml
 │  └─ harmonyos-package.yml
@@ -195,12 +242,10 @@ PaperTodo-HarmonyOS/
 └─ oh-package.json5
 ```
 
-## 下一步
+## 后续重点
 
-优先顺序：
-
-1. HarmonyOS PC / 2in1 真机验证多窗口、Topmost、最小窗口尺寸与焦点行为
-2. 按真机结果校准胶囊贴边几何和 Hover 动画
-3. 补 Todo 键盘操作与撤销 / 重做
-4. 补完整本地化
-5. 配置签名与可安装 Release 打包
+1. 在 HarmonyOS PC / 2in1 真机集中验证多窗口、Topmost、焦点、最小窗口、Hover 和系统文件提供方行为
+2. 按真机结果校准右侧胶囊队列的可用工作区、阴影、动画和输入边界
+3. 在目标设备验证图片拖入 / 安全粘贴、延迟回收、快启持久 URI 授权和运行期全局快捷键，并完善失败恢复
+4. 扩充数据迁移、Markdown、撤销 / 重做与本地化的自动化测试
+5. 配置签名并验证可安装 Release 包

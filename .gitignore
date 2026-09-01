@@ -8,6 +8,7 @@ local.properties
 # Build outputs
 build/
 **/build/
+**/.test/
 
 # Signing material
 *.p12
