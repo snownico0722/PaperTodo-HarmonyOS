@@ -32,6 +32,10 @@ export default function paperStoreDefaultsTest(): void {
       expect(state.markdownRenderMode).assertEqual(MARKDOWN_ENHANCED);
       expect(state.useCapsuleMode).assertTrue();
       expect(state.useDeepCapsuleMode).assertTrue();
+      expect(state.showDeepCapsuleWhileExpanded).assertTrue();
+      expect(state.useMasterCapsule).assertTrue();
+      expect(state.capsuleCollapseAllActive).assertFalse();
+      expect(state.capsuleStartTop).assertEqual(48);
       expect(state.todoVisualSize).assertEqual(TODO_VISUAL_MEDIUM);
       expect(state.autoClearCompletedTodos).assertFalse();
       expect(state.autoBottomCompleted).assertFalse();
@@ -41,7 +45,9 @@ export default function paperStoreDefaultsTest(): void {
       expect(state.collapseExpandedEdgeCapsuleOnClick).assertFalse();
       expect(state.hideEdgeCapsuleCloseButtonOnHover).assertFalse();
       expect(state.edgeCapsuleTitleCharacterLimit).assertEqual(0);
+      expect(state.titleCharacterLimit).assertEqual(6);
       expect(state.enablePaperLinks).assertTrue();
+      expect(state.hideLinkedPapersFromCapsules).assertFalse();
       expect(state.overallFontScale).assertEqual(1);
       expect(state.noteTextSize).assertEqual(VISUAL_TEXT_MEDIUM);
       expect(state.noteTextBold).assertFalse();

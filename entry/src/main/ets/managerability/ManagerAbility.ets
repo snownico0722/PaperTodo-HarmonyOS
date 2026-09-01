@@ -74,13 +74,24 @@ export default class ManagerAbility extends UIAbility {
     }
     try {
       win.setWindowDecorVisible(false);
+    } catch (error) {
+      console.error('hide settings decor failed: ' + String(error));
+    }
+    try {
       win.setWindowTitleButtonVisible(false, false, false);
-      win.setWindowDecorHeight(0);
       win.setWindowTitleMoveEnabled(false);
+    } catch (error) {
+      console.error('hide settings title controls failed: ' + String(error));
+    }
+    try {
       win.setWindowBackgroundColor('#00000000');
+    } catch (error) {
+      console.error('clear settings background failed: ' + String(error));
+    }
+    try {
       win.setWindowContainerColor('#00000000', '#00000000');
     } catch (error) {
-      console.error('style settings window failed: ' + String(error));
+      console.error('clear settings container failed: ' + String(error));
     }
     win.setWindowShadowEnabled(false).catch((error: BusinessError): void => {
       console.error('disable settings shadow failed: ' + error.message);

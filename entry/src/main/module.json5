@@ -66,6 +66,7 @@
         "supportWindowMode": [
           "floating"
         ],
+        "excludeFromDock": true,
         "removeMissionAfterTerminate": true,
         "exported": false
       },

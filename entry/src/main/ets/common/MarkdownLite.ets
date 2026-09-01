@@ -52,6 +52,13 @@ export interface MarkdownLine {
   imageId?: string;
   imageAlt?: string;
   imagePercent?: number;
+  /**
+   * Optional explicit local-image dimensions. The current note surface still
+   * sizes images proportionally, but retaining these values keeps the parser
+   * compatible with PaperTodo notes that carry `320x180` metadata.
+   */
+  imageWidth?: number;
+  imageHeight?: number;
   inlineTokens?: MarkdownInlineToken[];
 }
 
@@ -66,6 +73,25 @@ interface MarkdownLinkMatch {
   labelEnd: number;
   sourceEnd: number;
   url: string;
+}
+
+interface MarkdownHtmlTagMatch {
+  name: string;
+  openingEnd: number;
+  closingStart: number;
+  sourceEnd: number;
+  href?: string;
+}
+
+interface MarkdownFence {
+  character: string;
+  length: number;
+}
+
+interface MarkdownImageInlineSize {
+  width?: number;
+  height?: number;
+  percent?: number;
 }
 
 const INLINE_MAX_DEPTH: number = 24;
@@ -123,6 +149,31 @@ function parseInlineRange(state: MarkdownInlineParseState, start: number, end: n
         appendInlineToken(state, state.source.substring(cursor + delimiterLength, codeEnd),
           cursor + delimiterLength, codeEnd, codeStyle, linkUrl, linkSourceStart, linkSourceEnd);
         cursor = codeEnd + delimiterLength;
+        continue;
+      }
+    }
+
+    if (current === '<') {
+      const htmlTag: MarkdownHtmlTagMatch | null = findSupportedHtmlTagAt(state.source, cursor, end);
+      if (htmlTag !== null) {
+        const htmlStyle: MarkdownInlineStyle = styleForHtmlTag(style, htmlTag.name);
+        const firstTokenIndex: number = state.tokens.length;
+        const linkDisplayStart: number = state.displayLength;
+        if (htmlTag.name === 'code') {
+          appendInlineToken(state, state.source.substring(htmlTag.openingEnd, htmlTag.closingStart),
+            htmlTag.openingEnd, htmlTag.closingStart, htmlStyle, linkUrl,
+            linkSourceStart, linkSourceEnd);
+        } else {
+          parseInlineRange(state, htmlTag.openingEnd, htmlTag.closingStart, htmlStyle,
+            htmlTag.href === undefined ? linkUrl : htmlTag.href,
+            htmlTag.href === undefined ? linkSourceStart : cursor,
+            htmlTag.href === undefined ? linkSourceEnd : htmlTag.sourceEnd, depth + 1);
+        }
+        if (htmlTag.href !== undefined) {
+          applyLinkDisplayRange(state.tokens, firstTokenIndex, htmlTag.href, cursor,
+            linkDisplayStart, state.displayLength);
+        }
+        cursor = htmlTag.sourceEnd;
         continue;
       }
     }
@@ -190,6 +241,12 @@ function styleForMarker(current: MarkdownInlineStyle, marker: string): MarkdownI
   const isItalic: boolean = marker === '*' || marker === '_' || marker === '***' || marker === '___';
   return createInlineStyle(current.bold || isBold, current.italic || isItalic,
     current.strike || marker === '~~', false);
+}
+
+function styleForHtmlTag(current: MarkdownInlineStyle, name: string): MarkdownInlineStyle {
+  return createInlineStyle(current.bold || name === 'b' || name === 'strong',
+    current.italic || name === 'i' || name === 'em',
+    current.strike || name === 's' || name === 'del', current.code || name === 'code');
 }
 
 function appendInlineToken(state: MarkdownInlineParseState, text: string, sourceStart: number, sourceEnd: number,
@@ -418,6 +475,70 @@ function findMarkdownLinkAt(source: string, start: number, end: number): Markdow
   return null;
 }
 
+/**
+ * Finds a small, intentionally whitelisted, inline HTML element. This is not
+ * an HTML parser: block tags, arbitrary tags, unquoted href values and remote
+ * image markup remain plain text by design.
+ */
+function findSupportedHtmlTagAt(source: string, start: number, end: number): MarkdownHtmlTagMatch | null {
+  const openingEnd: number = source.indexOf('>', start + 1);
+  if (openingEnd < 0 || openingEnd >= end) {
+    return null;
+  }
+  const opening: string = source.substring(start + 1, openingEnd);
+  const nameMatch: RegExpMatchArray | null = opening.match(/^\s*(a|b|strong|i|em|s|del|u|code)\b/i);
+  if (nameMatch === null || nameMatch.length < 2 || /\/\s*$/.test(opening)) {
+    return null;
+  }
+  const name: string = nameMatch[1].toLowerCase();
+  let href: string | undefined;
+  if (name === 'a') {
+    const hrefMatch: RegExpMatchArray | null = opening.match(/\bhref\s*=\s*(["'])(.*?)\1/i);
+    if (hrefMatch === null || hrefMatch.length < 3) {
+      return null;
+    }
+    const candidate: string = trimUrlEnd(hrefMatch[2]);
+    if (!isHttpUrl(candidate)) {
+      return null;
+    }
+    href = candidate;
+  }
+
+  const closing: string = '</' + name + '>';
+  let cursor: number = openingEnd + 1;
+  let nesting: number = 1;
+  while (cursor < end) {
+    const lower: string = source.substring(cursor, Math.min(end, cursor + closing.length)).toLowerCase();
+    if (lower === closing) {
+      nesting -= 1;
+      if (nesting === 0) {
+        const result: MarkdownHtmlTagMatch = {
+          name: name,
+          openingEnd: openingEnd + 1,
+          closingStart: cursor,
+          sourceEnd: cursor + closing.length
+        };
+        if (href !== undefined) {
+          result.href = href;
+        }
+        return result;
+      }
+      cursor += closing.length;
+      continue;
+    }
+    const nestedOpening: string = '<' + name;
+    const nested: string = source.substring(cursor, Math.min(end, cursor + nestedOpening.length)).toLowerCase();
+    if (nested === nestedOpening) {
+      const next: string = source.charAt(cursor + nestedOpening.length);
+      if (next === '>' || isWhitespaceCharacter(next)) {
+        nesting += 1;
+      }
+    }
+    cursor += 1;
+  }
+  return null;
+}
+
 function startsWithHttpUrl(source: string, start: number, end: number): boolean {
   const prefixEnd: number = Math.min(start + 8, end);
   const prefix: string = source.substring(start, prefixEnd).toLowerCase();
@@ -472,13 +593,16 @@ export function parseMarkdownLines(content: string, mode: string): MarkdownLine[
   const sourceLines: string[] = content.replace(/\r\n/g, '\n').split('\n');
   const result: MarkdownLine[] = [];
   let inCode: boolean = false;
+  let fence: MarkdownFence | undefined;
 
   for (let i: number = 0; i < sourceLines.length; i++) {
     const source: string = sourceLines[i];
     const trimmed: string = source.trim();
 
-    if (trimmed.startsWith('```')) {
-      inCode = !inCode;
+    const foundFence: MarkdownFence | null = findFence(trimmed);
+    if (!inCode && foundFence !== null) {
+      inCode = true;
+      fence = foundFence;
       if (mode !== MARKDOWN_ENHANCED) {
         result.push({ id: 'line_' + i, kind: MD_KIND_CODE, text: source, level: 0 });
       }
@@ -486,6 +610,14 @@ export function parseMarkdownLines(content: string, mode: string): MarkdownLine[
     }
 
     if (inCode) {
+      if (fence !== undefined && isClosingFence(trimmed, fence)) {
+        inCode = false;
+        fence = undefined;
+        if (mode !== MARKDOWN_ENHANCED) {
+          result.push({ id: 'line_' + i, kind: MD_KIND_CODE, text: source, level: 0 });
+        }
+        continue;
+      }
       result.push({ id: 'line_' + i, kind: MD_KIND_CODE, text: source, level: 0 });
       continue;
     }
@@ -586,36 +718,117 @@ export function parseMarkdownLines(content: string, mode: string): MarkdownLine[
   return result;
 }
 
+function findFence(trimmed: string): MarkdownFence | null {
+  if (trimmed.length < 3) {
+    return null;
+  }
+  const character: string = trimmed.charAt(0);
+  if (character !== '`' && character !== '~') {
+    return null;
+  }
+  const length: number = countCharacterRun(trimmed, 0, trimmed.length, character);
+  if (length < 3) {
+    return null;
+  }
+  return { character: character, length: length };
+}
+
+function isClosingFence(trimmed: string, fence: MarkdownFence): boolean {
+  if (trimmed.length < fence.length || trimmed.charAt(0) !== fence.character) {
+    return false;
+  }
+  const length: number = countCharacterRun(trimmed, 0, trimmed.length, fence.character);
+  if (length < fence.length) {
+    return false;
+  }
+  for (let i: number = length; i < trimmed.length; i++) {
+    if (!isWhitespaceCharacter(trimmed.charAt(i))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function enhancedInlineTokens(source: string, mode: string): MarkdownInlineToken[] | undefined {
-  if (mode !== MARKDOWN_ENHANCED || containsSupportedHtmlMarkup(source)) {
+  if (mode !== MARKDOWN_ENHANCED) {
     return undefined;
   }
   return parseMarkdownInlineTokens(source);
 }
 
-function containsSupportedHtmlMarkup(source: string): boolean {
-  return /<\/?(?:a|b|strong|i|em|s|del|u|code)(?:\s+[^>]*)?\/?>/i.test(source);
-}
-
 function parseImageLine(trimmed: string, index: number): MarkdownLine | null {
   const match: RegExpMatchArray | null = trimmed.match(
-    /^!\[([^|\]]*)(?:\|(\d{1,3})%)?\]\(i:([A-Za-z0-9_-]+)\)(?:\{width=(\d{1,3})%\})?$/
+    /^!\[([^|\]]*)(?:\|([^\]]+))?\]\(i:([A-Za-z0-9_-]+)\)(?:\{width=(\d{1,4})(%)?\})?$/
   );
   if (match === null || match.length < 4) {
     return null;
   }
-  const rawPercent: string = match[4] !== undefined && match[4].length > 0 ? match[4] : match[2];
-  const parsedPercent: number = rawPercent !== undefined && rawPercent.length > 0 ? Number(rawPercent) : 100;
-  const percent: number = Number.isFinite(parsedPercent) ? Math.max(10, Math.min(100, parsedPercent)) : 100;
-  return {
+
+  const inlineSize: string = match[2] === undefined ? '' : match[2].trim();
+  const parsedInlineSize: MarkdownImageInlineSize | null = inlineSize.length === 0 ?
+    {} : parseImageInlineSize(inlineSize);
+  const suffixWidth: string = match[4] === undefined ? '' : match[4];
+  const suffixIsPercent: boolean = match[5] === '%';
+  const suffixPercent: number | undefined = suffixIsPercent ? parseImagePercent(suffixWidth + '%') : undefined;
+  const suffixWidthNumber: number | undefined = !suffixIsPercent && suffixWidth.length > 0 ? Number(suffixWidth) : undefined;
+  if (parsedInlineSize === null ||
+    (suffixWidth.length > 0 && suffixPercent === undefined &&
+      (suffixWidthNumber === undefined || !Number.isFinite(suffixWidthNumber) || suffixWidthNumber <= 0))) {
+    return null;
+  }
+
+  const line: MarkdownLine = {
     id: 'line_' + index,
     kind: MD_KIND_IMAGE,
     text: '',
     level: 0,
     imageId: match[3],
     imageAlt: match[1].trim(),
-    imagePercent: percent
+    imagePercent: suffixPercent === undefined ?
+      (parsedInlineSize.percent === undefined ? 100 : parsedInlineSize.percent) : suffixPercent
   };
+  if (parsedInlineSize.width !== undefined) {
+    line.imageWidth = parsedInlineSize.width;
+    line.imageHeight = parsedInlineSize.height;
+  }
+  if (suffixWidthNumber !== undefined && !suffixIsPercent) {
+    line.imageWidth = suffixWidthNumber;
+  }
+  return line;
+}
+
+function parseImageInlineSize(value: string): MarkdownImageInlineSize | null {
+  const percent: number | undefined = parseImagePercent(value);
+  if (percent !== undefined) {
+    return { percent: percent };
+  }
+  const match: RegExpMatchArray | null = value.match(/^(\d{1,4})[x×](\d{1,4})(?:\s*,\s*(\d{1,3})%)?$/i);
+  if (match === null || match.length < 3) {
+    return null;
+  }
+  const width: number = Number(match[1]);
+  const height: number = Number(match[2]);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return null;
+  }
+  const result: MarkdownImageInlineSize = { width: width, height: height };
+  if (match[3] !== undefined && match[3].length > 0) {
+    const parsedPercent: number | undefined = parseImagePercent(match[3] + '%');
+    if (parsedPercent === undefined) {
+      return null;
+    }
+    result.percent = parsedPercent;
+  }
+  return result;
+}
+
+function parseImagePercent(value: string): number | undefined {
+  const match: RegExpMatchArray | null = value.match(/^(\d{1,3})%$/);
+  if (match === null || match.length < 2) {
+    return undefined;
+  }
+  const parsed: number = Number(match[1]);
+  return Number.isFinite(parsed) ? Math.max(10, Math.min(100, parsed)) : undefined;
 }
 
 export function stripInlineMarkers(text: string): string {

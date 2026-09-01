@@ -1,6 +1,6 @@
-import { common, ConfigurationConstant, Want } from '@kit.AbilityKit';
-import { unifiedDataChannel } from '@kit.ArkData';
+import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { window } from '@kit.ArkUI';
 import {
   COLOR_SCHEME_FOREST,
   COLOR_SCHEME_INK,
@@ -9,9 +9,6 @@ import {
   MARKDOWN_BASIC,
   MARKDOWN_ENHANCED,
   MARKDOWN_OFF,
-  MAX_PAPERS,
-  PAPER_TYPE_NOTE,
-  PAPER_TYPE_TODO,
   PaperData,
   RESIZE_GRIP_HIDDEN,
   RESIZE_GRIP_SOFT,
@@ -27,11 +24,12 @@ import {
   VISUAL_TEXT_MEDIUM,
   VISUAL_TEXT_SMALL
 } from '../common/Models';
+import { DesktopShell, PAPER_COMMAND_CLOSE } from '../common/DesktopShell';
 import { GlobalHotkeys } from '../common/GlobalHotkeys';
-import { createPaperLinkDragData } from '../common/PaperLinkDrag';
 import { PaperStore } from '../common/PaperStore';
 import { formatText, languageLabel, resolveLanguage, supportedLanguages, tForSystem } from '../common/Strings';
 import { ThemePalette, resolvePalette } from '../common/ThemePalette';
+import { TrayService } from '../common/TrayService';
 
 @Entry
 @Component
@@ -43,12 +41,16 @@ struct Index {
   @StorageLink('markdownRenderMode') markdownRenderMode: string = MARKDOWN_ENHANCED;
   @StorageLink('useCapsuleMode') useCapsuleMode: boolean = true;
   @StorageLink('useDeepCapsuleMode') useDeepCapsuleMode: boolean = true;
+  @StorageLink('showDeepCapsuleWhileExpanded') showDeepCapsuleWhileExpanded: boolean = true;
+  @StorageLink('useMasterCapsule') useMasterCapsule: boolean = true;
+  @StorageLink('titleCharacterLimit') titleCharacterLimit: number = 6;
   @StorageLink('todoVisualSize') todoVisualSize: string = TODO_VISUAL_MEDIUM;
   @StorageLink('autoClearCompletedTodos') autoClearCompletedTodos: boolean = false;
   @StorageLink('autoBottomCompleted') autoBottomCompleted: boolean = false;
   @StorageLink('autoCompressLargeImages') autoCompressLargeImages: boolean = true;
   @StorageLink('globalHotkeysEnabled') globalHotkeysEnabled: boolean = false;
   @StorageLink('globalHotkeyStatus') globalHotkeyStatus: string = 'idle';
+  @StorageLink('statusBarStatus') statusBarStatus: string = 'unknown';
   @StorageLink('capsuleGap') capsuleGap: number = 4;
   @StorageLink('enableAnimations') enableAnimations: boolean = true;
   @StorageLink('rememberEdgeExpandedPosition') rememberEdgeExpandedPosition: boolean = true;
@@ -56,6 +58,7 @@ struct Index {
   @StorageLink('hideEdgeCapsuleCloseButtonOnHover') hideEdgeCapsuleCloseButtonOnHover: boolean = false;
   @StorageLink('edgeCapsuleTitleCharacterLimit') edgeCapsuleTitleCharacterLimit: number = 0;
   @StorageLink('enablePaperLinks') enablePaperLinks: boolean = true;
+  @StorageLink('hideLinkedPapersFromCapsules') hideLinkedPapersFromCapsules: boolean = false;
   @StorageLink('overallFontScale') overallFontScale: number = 1;
   @StorageLink('noteTextSize') noteTextSize: string = VISUAL_TEXT_MEDIUM;
   @StorageLink('noteTextBold') noteTextBold: boolean = false;
@@ -68,17 +71,20 @@ struct Index {
   @StorageLink('showTopBarNewTodoButton') showTopBarNewTodoButton: boolean = true;
   @StorageLink('showTopBarNewNoteButton') showTopBarNewNoteButton: boolean = true;
   @StorageLink('showTopBarExternalOpenButton') showTopBarExternalOpenButton: boolean = true;
-  @StorageLink('paperRevision') @Watch('onPaperRevision') paperRevision: number = 0;
   @StorageLink('systemColorMode') systemColorMode: number = ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT;
 
-  @State papers: PaperData[] = [];
-  @State confirmDeleteId: string = '';
   @State statusMessage: string = '';
-  @State selectedPanel: string = 'papers';
+  @State selectedPanel: string = 'general';
+  @State retryingStatusBar: boolean = false;
+  private settingsWindow: window.Window | null = null;
 
   aboutToAppear(): void {
     PaperStore.initialize(this.hostContext());
-    this.refresh();
+    window.getLastWindow(this.hostContext()).then((win: window.Window): void => {
+      this.settingsWindow = win;
+    }).catch((error: BusinessError): void => {
+      console.error('resolve settings window failed: ' + error.message);
+    });
     if (PaperStore.hasStorageError()) {
       this.statusMessage = this.text('status.storageProtectionDetected');
     }
@@ -86,14 +92,7 @@ struct Index {
 
   aboutToDisappear(): void {
     PaperStore.flushNow();
-  }
-
-  onPageShow(): void {
-    this.refresh();
-  }
-
-  private onPaperRevision(): void {
-    this.refresh();
+    this.settingsWindow = null;
   }
 
   private onUiLanguageChanged(): void {
@@ -102,10 +101,6 @@ struct Index {
 
   private hostContext(): common.UIAbilityContext {
     return this.getUIContext().getHostContext() as common.UIAbilityContext;
-  }
-
-  private refresh(): void {
-    this.papers = PaperStore.listPapers();
   }
 
   private text(key: string): string {
@@ -166,95 +161,30 @@ struct Index {
     return this.palette().primaryText;
   }
 
-  private startPaper(paperId: string, command: string = 'show'): void {
-    const want: Want = {
-      bundleName: 'com.snownico.papertodo',
-      moduleName: 'entry',
-      abilityName: 'PaperAbility',
-      parameters: {
-        paperId: paperId,
-        paperCommand: command
-      }
-    };
-    this.hostContext().startAbility(want).catch((error: BusinessError): void => {
-      this.statusMessage = this.formatted('status.openPaperFailed', 'error', error.message);
+  private syncCapsules(): void {
+    DesktopShell.syncCapsules(this.hostContext()).catch((error: Error): void => {
+      console.error('PaperTodo capsule settings sync failed: ' + error.message);
     });
   }
 
-  private isPaperOpen(id: string): boolean {
-    return AppStorage.get<boolean>('paperOpen:' + id) === true;
+  private closeSettings(): void {
+    PaperStore.flushNow();
+    this.hostContext().terminateSelf().catch((error: BusinessError): void => {
+      console.error('close settings failed: ' + error.message);
+    });
   }
 
-  private createPaper(type: string): void {
-    const paper: PaperData | null = PaperStore.createPaper(type);
-    if (paper === null) {
-      this.statusMessage = PaperStore.hasStorageError() ?
-        this.text('status.createBlockedByProtection') :
-        this.formatted('status.paperLimit', 'count', MAX_PAPERS.toString());
+  private startSettingsMove(event: TouchEvent): void {
+    if (event.type !== TouchType.Down) {
       return;
     }
-    this.statusMessage = '';
-    this.refresh();
-    this.startPaper(paper.id);
-  }
-
-  private showPaper(paper: PaperData): void {
-    PaperStore.setPaperVisible(paper.id, true);
-    this.refresh();
-    this.startPaper(paper.id, 'show');
-  }
-
-  private hidePaper(paper: PaperData): void {
-    PaperStore.setPaperVisible(paper.id, false);
-    if (this.isPaperOpen(paper.id)) {
-      this.startPaper(paper.id, 'hide');
-    }
-    this.refresh();
-  }
-
-  private showAll(): void {
-    const snapshot: PaperData[] = PaperStore.listPapers();
-    for (let i: number = 0; i < snapshot.length; i++) {
-      PaperStore.setPaperVisible(snapshot[i].id, true);
-      this.startPaper(snapshot[i].id, 'show');
-    }
-    this.refresh();
-  }
-
-  private hideAll(): void {
-    const snapshot: PaperData[] = PaperStore.listPapers();
-    for (let i: number = 0; i < snapshot.length; i++) {
-      const paper: PaperData = snapshot[i];
-      PaperStore.setPaperVisible(paper.id, false);
-      if (this.isPaperOpen(paper.id)) {
-        this.startPaper(paper.id, 'hide');
-      }
-    }
-    this.refresh();
-  }
-
-  private deletePaper(paper: PaperData): void {
-    if (this.confirmDeleteId !== paper.id) {
-      this.confirmDeleteId = paper.id;
+    const win: window.Window | null = this.settingsWindow;
+    if (win === null) {
       return;
     }
-    this.confirmDeleteId = '';
-    if (this.isPaperOpen(paper.id)) {
-      this.startPaper(paper.id, 'delete');
-    } else {
-      PaperStore.deletePaper(paper.id);
-    }
-    setTimeout((): void => this.refresh(), 80);
-  }
-
-  private cycleTheme(): void {
-    if (this.theme === THEME_SYSTEM) {
-      PaperStore.setTheme(THEME_LIGHT);
-    } else if (this.theme === THEME_LIGHT) {
-      PaperStore.setTheme(THEME_DARK);
-    } else {
-      PaperStore.setTheme(THEME_SYSTEM);
-    }
+    win.startMoving().catch((error: BusinessError): void => {
+      console.error('start native settings move failed: ' + error.message);
+    });
   }
 
   private cycleLanguage(): void {
@@ -267,10 +197,23 @@ struct Index {
       }
     }
     PaperStore.setUiLanguage(languages[(selectedIndex + 1) % languages.length]);
+    TrayService.refreshMenu(this.hostContext()).catch((error: Error): void => {
+      console.error('refresh status bar menu language failed: ' + error.message);
+    });
   }
 
   private currentLanguageLabel(): string {
     return languageLabel(this.uiLanguage, resolveLanguage(this.uiLanguage, this.systemLanguage));
+  }
+
+  private cycleTheme(): void {
+    if (this.theme === THEME_SYSTEM) {
+      PaperStore.setTheme(THEME_LIGHT);
+    } else if (this.theme === THEME_LIGHT) {
+      PaperStore.setTheme(THEME_DARK);
+    } else {
+      PaperStore.setTheme(THEME_SYSTEM);
+    }
   }
 
   private themeLabel(): string {
@@ -330,10 +273,60 @@ struct Index {
 
   private toggleCapsule(): void {
     PaperStore.setCapsuleMode(!this.useCapsuleMode);
+    this.syncCapsules();
   }
 
   private toggleDeepCapsule(): void {
     PaperStore.setDeepCapsuleMode(!this.useDeepCapsuleMode);
+    this.syncCapsules();
+  }
+
+  private toggleExpandedCapsule(): void {
+    PaperStore.setShowDeepCapsuleWhileExpanded(!this.showDeepCapsuleWhileExpanded);
+    this.syncCapsules();
+  }
+
+  private toggleMasterCapsule(): void {
+    PaperStore.setMasterCapsuleEnabled(!this.useMasterCapsule);
+    this.syncCapsules();
+  }
+
+  private cycleCapsuleGap(): void {
+    if (this.capsuleGap === 0) {
+      PaperStore.setCapsuleGap(4);
+    } else if (this.capsuleGap === 4) {
+      PaperStore.setCapsuleGap(8);
+    } else {
+      PaperStore.setCapsuleGap(0);
+    }
+    this.syncCapsules();
+  }
+
+  private cycleTitleCharacterLimit(): void {
+    PaperStore.setTitleCharacterLimit(this.titleCharacterLimit >= 20 ? 2 : this.titleCharacterLimit + 1);
+    this.syncCapsules();
+  }
+
+  private titleCharacterLimitLabel(): string {
+    return this.formatted('value.characters', 'count', this.titleCharacterLimit.toString());
+  }
+
+  private cycleEdgeTitleLimit(): void {
+    if (this.edgeCapsuleTitleCharacterLimit === 0) {
+      PaperStore.setEdgeCapsuleTitleCharacterLimit(8);
+    } else if (this.edgeCapsuleTitleCharacterLimit === 8) {
+      PaperStore.setEdgeCapsuleTitleCharacterLimit(12);
+    } else if (this.edgeCapsuleTitleCharacterLimit === 12) {
+      PaperStore.setEdgeCapsuleTitleCharacterLimit(16);
+    } else {
+      PaperStore.setEdgeCapsuleTitleCharacterLimit(0);
+    }
+    this.syncCapsules();
+  }
+
+  private edgeTitleLimitLabel(): string {
+    return this.edgeCapsuleTitleCharacterLimit === 0 ? this.text('value.all') :
+      this.formatted('value.characters', 'count', this.edgeCapsuleTitleCharacterLimit.toString());
   }
 
   private cycleTodoVisualSize(): void {
@@ -395,14 +388,81 @@ struct Index {
     return this.text('status.hotkeysIdle');
   }
 
-  private cycleCapsuleGap(): void {
-    if (this.capsuleGap === 0) {
-      PaperStore.setCapsuleGap(4);
-    } else if (this.capsuleGap === 4) {
-      PaperStore.setCapsuleGap(8);
-    } else {
-      PaperStore.setCapsuleGap(0);
+  private statusBarStatusLabel(): string {
+    const status: string = this.statusBarStatus;
+    if (status === 'active') {
+      return this.text('status.statusBarActive');
     }
+    if (status === 'removed') {
+      return this.text('status.statusBarResidentRemoved');
+    }
+    if (status.startsWith('unsupported:')) {
+      return this.text('status.statusBarUnsupported');
+    }
+    if (status.startsWith('retrying:')) {
+      return this.text('status.statusBarRetrying');
+    }
+    if (status.startsWith('uncertain:')) {
+      return this.text('status.statusBarUncertain');
+    }
+    if (status.startsWith('resident error:')) {
+      return status.indexOf('removed') >= 0 ? this.text('status.statusBarResidentRemoved') :
+        this.text('status.statusBarResidentError');
+    }
+    if (status.startsWith('remove error:')) {
+      return this.text('status.statusBarRemoveError');
+    }
+    if (status.startsWith('error:')) {
+      return this.text('status.statusBarError');
+    }
+    return this.text('status.statusBarUnknown');
+  }
+
+  private retryStatusBar(): void {
+    if (this.retryingStatusBar) {
+      return;
+    }
+    this.retryingStatusBar = true;
+    const context: common.UIAbilityContext = this.hostContext();
+    AppStorage.setOrCreate<string>('statusBarStatus', 'retrying: settings');
+    TrayService.install(context).then((installed: boolean): void => {
+      if (!installed) {
+        if (!this.statusBarStatus.startsWith('error:') && !this.statusBarStatus.startsWith('unsupported:')) {
+          AppStorage.setOrCreate<string>('statusBarStatus', 'error: retry installation failed');
+        }
+        this.retryingStatusBar = false;
+        return;
+      }
+      DesktopShell.startResident(context).then((residentStarted: boolean): void => {
+        if (residentStarted) {
+          AppStorage.setOrCreate<string>('statusBarStatus', 'active');
+          this.retryingStatusBar = false;
+          return;
+        }
+        AppStorage.setOrCreate<string>('statusBarStatus', 'resident error: removing status bar item');
+        TrayService.remove(context).then((removed: boolean): void => {
+          AppStorage.setOrCreate<string>('statusBarStatus', removed ? 'resident error: removed' :
+            'resident error: remove failed');
+          this.retryingStatusBar = false;
+        }).catch((_error: Error): void => {
+          AppStorage.setOrCreate<string>('statusBarStatus', 'resident error: remove failed');
+          this.retryingStatusBar = false;
+        });
+      }).catch((_error: Error): void => {
+        AppStorage.setOrCreate<string>('statusBarStatus', 'resident error: removing status bar item');
+        TrayService.remove(context).then((removed: boolean): void => {
+          AppStorage.setOrCreate<string>('statusBarStatus', removed ? 'resident error: removed' :
+            'resident error: remove failed');
+          this.retryingStatusBar = false;
+        }).catch((_removeError: Error): void => {
+          AppStorage.setOrCreate<string>('statusBarStatus', 'resident error: remove failed');
+          this.retryingStatusBar = false;
+        });
+      });
+    }).catch((_error: Error): void => {
+      AppStorage.setOrCreate<string>('statusBarStatus', 'error: retry installation failed');
+      this.retryingStatusBar = false;
+    });
   }
 
   private toggleAnimations(): void {
@@ -411,35 +471,27 @@ struct Index {
 
   private toggleRememberExpandedPosition(): void {
     PaperStore.setRememberEdgeExpandedPosition(!this.rememberEdgeExpandedPosition);
+    this.syncCapsules();
   }
 
   private toggleRepeatEdgeClick(): void {
     PaperStore.setCollapseExpandedEdgeCapsuleOnClick(!this.collapseExpandedEdgeCapsuleOnClick);
+    this.syncCapsules();
   }
 
   private toggleHoverCloseButton(): void {
     PaperStore.setHideEdgeCapsuleCloseButtonOnHover(!this.hideEdgeCapsuleCloseButtonOnHover);
-  }
-
-  private cycleEdgeTitleLimit(): void {
-    if (this.edgeCapsuleTitleCharacterLimit === 0) {
-      PaperStore.setEdgeCapsuleTitleCharacterLimit(8);
-    } else if (this.edgeCapsuleTitleCharacterLimit === 8) {
-      PaperStore.setEdgeCapsuleTitleCharacterLimit(12);
-    } else if (this.edgeCapsuleTitleCharacterLimit === 12) {
-      PaperStore.setEdgeCapsuleTitleCharacterLimit(16);
-    } else {
-      PaperStore.setEdgeCapsuleTitleCharacterLimit(0);
-    }
-  }
-
-  private edgeTitleLimitLabel(): string {
-    return this.edgeCapsuleTitleCharacterLimit === 0 ? this.text('value.all') :
-      this.formatted('value.characters', 'count', this.edgeCapsuleTitleCharacterLimit.toString());
+    this.syncCapsules();
   }
 
   private togglePaperLinks(): void {
     PaperStore.setPaperLinksEnabled(!this.enablePaperLinks);
+    this.syncCapsules();
+  }
+
+  private toggleHideLinkedPapersFromCapsules(): void {
+    PaperStore.setHideLinkedPapersFromCapsules(!this.hideLinkedPapersFromCapsules);
+    this.syncCapsules();
   }
 
   private cycleOverallFontScale(): void {
@@ -534,69 +586,22 @@ struct Index {
       this.statusMessage = this.text('status.noValidBackup');
       return;
     }
+    const context: common.UIAbilityContext = this.hostContext();
     for (let i: number = 0; i < current.length; i++) {
-      if (this.isPaperOpen(current[i].id)) {
-        this.startPaper(current[i].id, 'close');
-      }
+      DesktopShell.startPaper(context, current[i].id, PAPER_COMMAND_CLOSE);
+      DesktopShell.startEdge(context, current[i].id, PAPER_COMMAND_CLOSE);
     }
+    DesktopShell.startMaster(context, PAPER_COMMAND_CLOSE);
     GlobalHotkeys.setEnabled(PaperStore.loadState().globalHotkeysEnabled);
     this.statusMessage = this.text('status.backupRestored');
-    this.refresh();
-    setTimeout((): void => {
-      const restored: PaperData[] = PaperStore.listPapers();
-      for (let i: number = 0; i < restored.length; i++) {
-        if (restored[i].isVisible) {
-          this.startPaper(restored[i].id, 'show');
-        }
-      }
-    }, 180);
-  }
-
-  private paperTitle(paper: PaperData): string {
-    if (paper.title.trim().length > 0) {
-      return paper.title.trim();
-    }
-    if (paper.type === PAPER_TYPE_NOTE) {
-      const firstLine: string = paper.content.split('\n')[0].trim();
-      return firstLine.length > 0 ? firstLine : this.text('paper.unnamedNote');
-    }
-    for (let i: number = 0; i < paper.items.length; i++) {
-      if (paper.items[i].text.trim().length > 0) {
-        return paper.items[i].text.trim();
-      }
-    }
-    return this.text('paper.unnamedTodo');
-  }
-
-  private paperMeta(paper: PaperData): string {
-    const parts: string[] = [];
-    parts.push(this.text(paper.type === PAPER_TYPE_NOTE ? 'paper.notePaper' : 'paper.todoPaper'));
-    parts.push(this.text(paper.isVisible ? 'paper.visible' : 'paper.hidden'));
-    if (paper.alwaysOnTop) {
-      parts.push(this.text('paper.topmost'));
-    }
-    if (paper.isCollapsed) {
-      parts.push(this.text('paper.capsule'));
-    }
-    return parts.join(' · ');
-  }
-
-  private beginPaperLinkDrag(event: DragEvent, paper: PaperData): DragItemInfo {
-    const data: unifiedDataChannel.UnifiedData = createPaperLinkDragData(
-      paper.id,
-      paper.type,
-      this.paperTitle(paper)
-    );
-    event.setData(data);
-    event.dragBehavior = DragBehavior.COPY;
-    return { extraInfo: paper.id };
+    setTimeout((): void => this.syncCapsules(), 180);
   }
 
   @Builder
   private SettingButton(label: string, action: () => void) {
     Button(label)
       .height(48)
-      .constraintSize({ maxWidth: '100%' })
+      .constraintSize({ minWidth: 176, maxWidth: 268 })
       .fontSize(11)
       .labelStyle({
         overflow: TextOverflow.Ellipsis,
@@ -635,6 +640,16 @@ struct Index {
       })
   }
 
+  @Builder
+  private SectionTitle(label: string) {
+    Text(label)
+      .width('100%')
+      .fontSize(11)
+      .fontWeight(FontWeight.Medium)
+      .fontColor(this.mutedColor())
+      .margin({ top: 10, bottom: 6 })
+  }
+
   build() {
     Column() {
       Row() {
@@ -646,7 +661,7 @@ struct Index {
             .fontSize(30)
             .fontWeight(FontWeight.Medium)
             .fontColor(this.textColor())
-          Text(this.text('app.subtitle'))
+          Text(this.text('app.settingsSubtitle'))
             .width('100%')
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -655,87 +670,36 @@ struct Index {
             .margin({ top: 4 })
         }
         .layoutWeight(1)
-        .constraintSize({ minWidth: 0 })
         .alignItems(HorizontalAlign.Start)
-        Button(this.text('action.newTodo'))
-          .height(40)
-          .fontSize(13)
-          .labelStyle({
-            overflow: TextOverflow.Ellipsis,
-            maxLines: 1,
-            minFontSize: 10,
-            maxFontSize: 13,
-            heightAdaptivePolicy: TextHeightAdaptivePolicy.MIN_FONT_SIZE_FIRST
-          })
-          .fontColor(this.primaryButtonTextColor())
-          .backgroundColor(this.primaryButtonColor())
-          .borderRadius(10)
-          .margin({ left: 8 })
-          .onClick((): void => this.createPaper(PAPER_TYPE_TODO))
-        Button(this.text('action.newNote'))
-          .height(40)
-          .fontSize(13)
-          .labelStyle({
-            overflow: TextOverflow.Ellipsis,
-            maxLines: 1,
-            minFontSize: 10,
-            maxFontSize: 13,
-            heightAdaptivePolicy: TextHeightAdaptivePolicy.MIN_FONT_SIZE_FIRST
-          })
-          .fontColor(this.primaryButtonTextColor())
-          .backgroundColor(this.primaryButtonColor())
-          .borderRadius(10)
-          .margin({ left: 8 })
-          .onClick((): void => this.createPaper(PAPER_TYPE_NOTE))
+        .onTouch((event: TouchEvent): void => this.startSettingsMove(event))
+
+        Button(this.text('glyph.close'))
+          .width(34)
+          .height(34)
+          .fontSize(18)
+          .fontColor(this.textColor())
+          .backgroundColor(Color.Transparent)
+          .accessibilityText(this.text('action.closeSettings'))
+          .onClick((): void => this.closeSettings())
       }
       .width('100%')
+      .alignItems(VerticalAlign.Top)
 
       Row({ space: 6 }) {
-        this.PanelTab(this.text('tab.papers'), 'papers')
-        this.PanelTab(this.text('tab.basic'), 'behavior')
-        this.PanelTab(this.text('tab.capsule'), 'capsule')
+        this.PanelTab(this.text('tab.general'), 'general')
         this.PanelTab(this.text('tab.visual'), 'visual')
+        this.PanelTab(this.text('tab.shortcuts'), 'shortcuts')
       }
       .width('100%')
       .margin({ top: 14 })
 
-      if (this.selectedPanel === 'papers') {
-        Row({ space: 8 }) {
-          Button(this.text('action.showAll'))
-            .height(36)
-            .fontSize(12)
-            .onClick((): void => this.showAll())
-          Button(this.text('action.hideAll'))
-            .height(36)
-            .fontSize(12)
-            .onClick((): void => this.hideAll())
-          Blank()
-          Button(this.text('action.restoreBackup'))
-            .height(36)
-            .fontSize(12)
-            .fontColor(this.mutedColor())
-            .backgroundColor(Color.Transparent)
-            .onClick((): void => this.restoreBackup())
-        }
-        .width('100%')
-        .margin({ top: 12 })
-      }
-
-      if (this.selectedPanel === 'behavior') {
+      if (this.selectedPanel === 'general') {
         Scroll() {
           Column() {
-            Text(this.text('section.basicBehavior'))
-              .width('100%')
-              .fontSize(11)
-              .fontWeight(FontWeight.Medium)
-              .fontColor(this.mutedColor())
-              .margin({ bottom: 6 })
+            this.SectionTitle(this.text('section.generalBehavior'))
             Flex({ wrap: FlexWrap.Wrap }) {
               this.SettingButton(this.text('setting.language') + this.currentLanguageLabel(),
                 (): void => this.cycleLanguage())
-              this.SettingButton(this.text('setting.theme') + this.themeLabel(), (): void => this.cycleTheme())
-              this.SettingButton(this.text('setting.colorScheme') + this.colorSchemeLabel(),
-                (): void => this.cycleColorScheme())
               this.SettingButton(this.text('setting.markdown') + this.markdownLabel(),
                 (): void => this.cycleMarkdownMode())
               this.SettingButton(this.text('setting.todoSize') + this.todoVisualSizeLabel(),
@@ -746,59 +710,77 @@ struct Index {
                 (): void => this.toggleAutoBottomCompleted())
               this.SettingButton(this.text('setting.imageCompression') +
                 this.enabledLabel(this.autoCompressLargeImages), (): void => this.toggleAutoCompressImages())
-              this.SettingButton(this.text('setting.globalHotkeys') +
-                this.enabledLabel(this.globalHotkeysEnabled), (): void => this.toggleGlobalHotkeys())
               this.SettingButton(this.text('setting.paperLinks') + this.enabledLabel(this.enablePaperLinks),
                 (): void => this.togglePaperLinks())
+              this.SettingButton(this.text('setting.hideLinkedPapersFromCapsules') +
+                this.enabledLabel(this.hideLinkedPapersFromCapsules),
+                (): void => this.toggleHideLinkedPapersFromCapsules())
               this.SettingButton(this.text('setting.animations') + this.enabledLabel(this.enableAnimations),
                 (): void => this.toggleAnimations())
+            }
+            .width('100%')
+
+            this.SectionTitle(this.text('section.systemEntry'))
+            Row({ space: 8 }) {
+              Column() {
+                Text(this.text('setting.statusBarEntry'))
+                  .width('100%')
+                  .fontSize(11)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor(this.textColor())
+                Text(this.statusBarStatusLabel())
+                  .width('100%')
+                  .fontSize(10)
+                  .fontColor(this.mutedColor())
+                  .margin({ top: 2 })
+                  .maxLines(2)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+              }
+              .layoutWeight(1)
+              .alignItems(HorizontalAlign.Start)
+              Button(this.retryingStatusBar ? this.text('action.retryingStatusBar') :
+                this.text('action.retryStatusBar'))
+                .height(34)
+                .fontSize(11)
+                .fontColor(this.primaryButtonTextColor())
+                .backgroundColor(this.primaryButtonColor())
+                .borderRadius(8)
+                .enabled(!this.retryingStatusBar)
+                .onClick((): void => this.retryStatusBar())
+            }
+            .width('100%')
+            .padding({ left: 10, right: 8, top: 8, bottom: 8 })
+            .backgroundColor(this.cardColor())
+            .border({ width: 1, color: this.cardBorderColor() })
+            .borderRadius(9)
+
+            this.SectionTitle(this.text('section.paperToolbar'))
+            Flex({ wrap: FlexWrap.Wrap }) {
               this.SettingButton(this.text('setting.newTodoButton') +
                 this.visibleLabel(this.showTopBarNewTodoButton), (): void => this.toggleNewTodoButton())
               this.SettingButton(this.text('setting.newNoteButton') +
                 this.visibleLabel(this.showTopBarNewNoteButton), (): void => this.toggleNewNoteButton())
               this.SettingButton(this.text('setting.externalOpenButton') +
                 this.visibleLabel(this.showTopBarExternalOpenButton), (): void => this.toggleExternalOpenButton())
+              this.SettingButton(this.text('setting.titleCharacters') + this.titleCharacterLimitLabel(),
+                (): void => this.cycleTitleCharacterLimit())
             }
             .width('100%')
-            Text(this.globalHotkeyStatusLabel())
-              .width('100%')
-              .fontSize(11)
-              .fontWeight(FontWeight.Medium)
-              .fontColor(this.textColor())
-              .margin({ top: 8 })
-            Text(this.text('setting.globalHotkeysHint'))
-              .width('100%')
-              .fontSize(11)
-              .fontColor(this.mutedColor())
-              .margin({ top: 4 })
-          }
-          .width('100%')
-          .alignItems(HorizontalAlign.Start)
-          .padding({ bottom: 4 })
-        }
-        .layoutWeight(1)
-        .width('100%')
-        .margin({ top: 12 })
-        .scrollBar(BarState.Auto)
-        .edgeEffect(EdgeEffect.Spring)
-      }
 
-      if (this.selectedPanel === 'capsule') {
-        Scroll() {
-          Column() {
-            Text(this.text('section.singleScreenRightQueue'))
-              .width('100%')
-              .fontSize(11)
-              .fontWeight(FontWeight.Medium)
-              .fontColor(this.mutedColor())
-              .margin({ bottom: 6 })
+            this.SectionTitle(this.text('section.capsuleBehavior'))
             Flex({ wrap: FlexWrap.Wrap }) {
               this.SettingButton(this.text('setting.capsule') + this.enabledLabel(this.useCapsuleMode),
                 (): void => this.toggleCapsule())
-              this.SettingButton(this.text('setting.autoDockEdge') + this.enabledLabel(this.useDeepCapsuleMode),
+              this.SettingButton(this.text('setting.deepCapsule') + this.enabledLabel(this.useDeepCapsuleMode),
                 (): void => this.toggleDeepCapsule())
+              this.SettingButton(this.text('setting.expandedDeepCapsule') +
+                this.enabledLabel(this.showDeepCapsuleWhileExpanded), (): void => this.toggleExpandedCapsule())
+              this.SettingButton(this.text('setting.masterCapsule') + this.enabledLabel(this.useMasterCapsule),
+                (): void => this.toggleMasterCapsule())
               this.SettingButton(this.text('setting.capsuleGap') + this.capsuleGap.toString(),
                 (): void => this.cycleCapsuleGap())
+              this.SettingButton(this.text('setting.edgeTitle') + this.edgeTitleLimitLabel(),
+                (): void => this.cycleEdgeTitleLimit())
               this.SettingButton(this.text('setting.rememberExpandedPosition') +
                 this.enabledLabel(this.rememberEdgeExpandedPosition),
                 (): void => this.toggleRememberExpandedPosition())
@@ -807,10 +789,19 @@ struct Index {
               this.SettingButton(this.text('setting.hideCloseOnHover') +
                 this.enabledLabel(this.hideEdgeCapsuleCloseButtonOnHover),
                 (): void => this.toggleHoverCloseButton())
-              this.SettingButton(this.text('setting.edgeTitle') + this.edgeTitleLimitLabel(),
-                (): void => this.cycleEdgeTitleLimit())
             }
             .width('100%')
+
+            this.SectionTitle(this.text('section.data'))
+            Flex({ wrap: FlexWrap.Wrap }) {
+              this.SettingButton(this.text('action.restoreBackup'), (): void => this.restoreBackup())
+            }
+            .width('100%')
+            Text(this.text('setting.backupHint'))
+              .width('100%')
+              .fontSize(11)
+              .fontColor(this.mutedColor())
+              .margin({ top: 2, bottom: 4 })
           }
           .width('100%')
           .alignItems(HorizontalAlign.Start)
@@ -818,7 +809,7 @@ struct Index {
         }
         .layoutWeight(1)
         .width('100%')
-        .margin({ top: 12 })
+        .margin({ top: 2 })
         .scrollBar(BarState.Auto)
         .edgeEffect(EdgeEffect.Spring)
       }
@@ -826,13 +817,11 @@ struct Index {
       if (this.selectedPanel === 'visual') {
         Scroll() {
           Column() {
-            Text(this.text('section.visual'))
-              .width('100%')
-              .fontSize(11)
-              .fontWeight(FontWeight.Medium)
-              .fontColor(this.mutedColor())
-              .margin({ bottom: 6 })
+            this.SectionTitle(this.text('section.visual'))
             Flex({ wrap: FlexWrap.Wrap }) {
+              this.SettingButton(this.text('setting.theme') + this.themeLabel(), (): void => this.cycleTheme())
+              this.SettingButton(this.text('setting.colorScheme') + this.colorSchemeLabel(),
+                (): void => this.cycleColorScheme())
               this.SettingButton(this.text('setting.overallFontSize') +
                 Math.round(this.overallFontScale * 100).toString() + '%',
                 (): void => this.cycleOverallFontScale())
@@ -861,7 +850,39 @@ struct Index {
         }
         .layoutWeight(1)
         .width('100%')
-        .margin({ top: 12 })
+        .margin({ top: 2 })
+        .scrollBar(BarState.Auto)
+        .edgeEffect(EdgeEffect.Spring)
+      }
+
+      if (this.selectedPanel === 'shortcuts') {
+        Scroll() {
+          Column() {
+            this.SectionTitle(this.text('section.shortcuts'))
+            Flex({ wrap: FlexWrap.Wrap }) {
+              this.SettingButton(this.text('setting.globalHotkeys') +
+                this.enabledLabel(this.globalHotkeysEnabled), (): void => this.toggleGlobalHotkeys())
+            }
+            .width('100%')
+            Text(this.globalHotkeyStatusLabel())
+              .width('100%')
+              .fontSize(11)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(this.textColor())
+              .margin({ top: 8 })
+            Text(this.text('setting.globalHotkeysHint'))
+              .width('100%')
+              .fontSize(11)
+              .fontColor(this.mutedColor())
+              .margin({ top: 4 })
+          }
+          .width('100%')
+          .alignItems(HorizontalAlign.Start)
+          .padding({ bottom: 4 })
+        }
+        .layoutWeight(1)
+        .width('100%')
+        .margin({ top: 2 })
         .scrollBar(BarState.Auto)
         .edgeEffect(EdgeEffect.Spring)
       }
@@ -874,109 +895,6 @@ struct Index {
           .margin({ top: 6 })
       }
 
-      if (this.selectedPanel === 'papers' && this.papers.length === 0) {
-        Column() {
-          Text(this.text(PaperStore.hasStorageError() ? 'empty.storageProtectionTitle' : 'empty.noPapersTitle'))
-            .fontSize(18)
-            .fontColor(this.textColor())
-          Text(this.text(PaperStore.hasStorageError() ? 'empty.storageProtectionBody' : 'empty.noPapersBody'))
-            .fontSize(13)
-            .fontColor(this.mutedColor())
-            .margin({ top: 8 })
-        }
-        .layoutWeight(1)
-        .width('100%')
-        .justifyContent(FlexAlign.Center)
-      } else if (this.selectedPanel === 'papers') {
-        List({ space: 8 }) {
-          ForEach(this.papers, (paper: PaperData) => {
-            ListItem() {
-              Row() {
-                Text('⠿')
-                  .width(28)
-                  .height(40)
-                  .textAlign(TextAlign.Center)
-                  .fontSize(15)
-                  .fontColor(this.mutedColor())
-                  .backgroundColor(this.pageBackgroundColor())
-                  .borderRadius(8)
-                  .margin({ right: 6 })
-                  .draggable(true)
-                  .onDragStart((event: DragEvent): DragItemInfo => this.beginPaperLinkDrag(event, paper))
-                Text(paper.type === PAPER_TYPE_NOTE ? '✎' : '☑')
-                  .width(28)
-                  .fontSize(18)
-                  .fontColor(this.textColor())
-                Column() {
-                  Text(this.paperTitle(paper))
-                    .maxLines(1)
-                    .textOverflow({ overflow: TextOverflow.Ellipsis })
-                    .fontSize(14)
-                    .fontColor(this.textColor())
-                  Text(this.paperMeta(paper))
-                    .fontSize(11)
-                    .fontColor(this.mutedColor())
-                    .margin({ top: 3 })
-                }
-                .layoutWeight(1)
-                .alignItems(HorizontalAlign.Start)
-                Button(this.text(paper.isVisible ? 'action.focus' : 'action.show'))
-                  .height(32)
-                  .fontSize(11)
-                  .onClick((): void => this.showPaper(paper))
-                if (paper.isVisible) {
-                  Button(this.text('action.hide'))
-                    .height(32)
-                    .fontSize(11)
-                    .margin({ left: 6 })
-                    .onClick((): void => this.hidePaper(paper))
-                }
-                if (this.confirmDeleteId === paper.id) {
-                  Button(this.text('action.cancel'))
-                    .height(32)
-                    .fontSize(11)
-                    .margin({ left: 6 })
-                    .onClick((): void => {
-                      this.confirmDeleteId = '';
-                    })
-                  Button(this.text('action.confirmDelete'))
-                    .height(32)
-                    .fontSize(11)
-                    .fontColor('#FFFFFF')
-                    .backgroundColor('#B42318')
-                    .margin({ left: 6 })
-                    .onClick((): void => this.deletePaper(paper))
-                } else {
-                  Button('×')
-                    .width(32)
-                    .height(32)
-                    .fontSize(13)
-                    .fontColor(this.mutedColor())
-                    .backgroundColor(Color.Transparent)
-                    .margin({ left: 6 })
-                    .onClick((): void => this.deletePaper(paper))
-                }
-              }
-              .width('100%')
-              .height(62)
-              .padding({ left: 12, right: 8 })
-              .backgroundColor(this.cardColor())
-              .border({ width: 1, color: this.cardBorderColor() })
-              .borderRadius(12)
-            }
-          }, (paper: PaperData): string => paper.id)
-        }
-        .layoutWeight(1)
-        .width('100%')
-        .margin({ top: 12 })
-        .scrollBar(BarState.Off)
-      }
-
-      Text(this.text('footer.autosave'))
-        .width('100%')
-        .fontSize(11)
-        .fontColor(this.mutedColor())
-        .margin({ top: 8 })
     }
     .width('100%')
     .height('100%')

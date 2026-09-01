@@ -54,9 +54,20 @@ import {
   parseMarkdownLines
 } from '../common/MarkdownLite';
 import { PaperStore } from '../common/PaperStore';
+import { cleanCommittedPaperTitle, cleanPaperTitle, effectivePaperTitle } from '../common/PaperTitles';
+import {
+  PAPER_ACTION_COLLAPSE,
+  PAPER_ACTION_EXPAND,
+  PAPER_ACTION_HIDE,
+  isPaperEmpty,
+  resolveLinkedPaperAction,
+  resolveSystemCloseAction,
+  resolveTopBarDismissAction
+} from '../common/PaperInteractionPolicy';
 import {
   PAPER_LINK_UDMF_TYPE,
   PaperLinkDragPayload,
+  createPaperLinkDragData,
   parsePaperLinkDragRecord
 } from '../common/PaperLinkDrag';
 import {
@@ -91,6 +102,8 @@ import {
   parseTodoItemDragRecord
 } from '../common/TodoDrag';
 import { truncateText } from '../common/TextSafety';
+import { DesktopShell } from '../common/DesktopShell';
+import { ExternalMarkdown } from '../common/ExternalMarkdown';
 
 interface NoteInsertion {
   value: string;
@@ -100,6 +113,11 @@ interface NoteInsertion {
 interface QuickLaunchDropTarget {
   uri: string;
   kind: string;
+}
+
+interface ClipboardImageCandidate {
+  pixelMap?: image.PixelMap;
+  uri?: string;
 }
 
 @Entry({ useSharedStorage: true })
@@ -137,6 +155,7 @@ struct Paper {
   @StorageLink('showTopBarNewTodoButton') showTopBarNewTodoButton: boolean = true;
   @StorageLink('showTopBarNewNoteButton') showTopBarNewNoteButton: boolean = true;
   @StorageLink('showTopBarExternalOpenButton') showTopBarExternalOpenButton: boolean = true;
+  @StorageLink('titleCharacterLimit') titleCharacterLimit: number = 6;
   @StorageLink('paperRevision') @Watch('onPaperRevision') paperRevision: number = 0;
   @StorageLink('paperWindowEventRevision') @Watch('onPaperWindowEvent') paperWindowEventRevision: number = 0;
   @StorageLink('systemColorMode') systemColorMode: number = ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT;
@@ -144,18 +163,17 @@ struct Paper {
   @State title: string = '';
   @State items: PaperItem[] = [];
   @State content: string = '';
-  @State draft: string = '';
   @State isNoteBrowsing: boolean = true;
   @State alwaysOnTop: boolean = false;
   @State isCollapsed: boolean = false;
   @State markdownLines: MarkdownLine[] = [];
-  @State deleteConfirm: boolean = false;
   @State layoutWidth: number = 320;
-  @State showMoreActions: boolean = false;
+  @State titleEditing: boolean = false;
   @State statusMessage: string = '';
   @State capsuleHovered: boolean = false;
   @State linkingTodoId: string = '';
   @State keyboardMenuTodoId: string = '';
+  @State contextMenuTodoId: string = '';
   @State canUndoTodo: boolean = false;
   @State canRedoTodo: boolean = false;
   @State textZoom: number = 1;
@@ -166,8 +184,11 @@ struct Paper {
   @State todoDraggingId: string = '';
   @State todoDropTargetId: string = '';
   @State todoDeleteDropHovered: boolean = false;
+  @State failedQuickLaunchKeys: string[] = [];
 
   private paper: PaperData | null = null;
+  private titleBeforeEdit: string = '';
+  private titleController: TextInputController = new TextInputController();
   private moveBaseX: number = 0;
   private moveBaseY: number = 0;
   private moveCurrentX: number = 0;
@@ -190,8 +211,11 @@ struct Paper {
   private capsuleDragMoved: boolean = false;
   private lastCapsuleDragEndAt: number = 0;
   private todoHistory: TodoHistory = new TodoHistory();
-  private todoControllers: Map<string, TextInputController> = new Map<string, TextInputController>();
+  private todoControllers: Map<string, TextAreaController> = new Map<string, TextAreaController>();
+  private focusedTodoId: string = '';
   private noteController: TextAreaController = new TextAreaController();
+  private noteInteractionActive: boolean = false;
+  private noteBlurGeneration: number = 0;
   private componentActive: boolean = false;
   private imageOperationGeneration: number = 0;
   private surfaceTransitionGeneration: number = 0;
@@ -202,12 +226,16 @@ struct Paper {
   aboutToAppear(): void {
     this.componentActive = true;
     this.imageImporting = false;
+    this.noteInteractionActive = false;
+    this.noteBlurGeneration += 1;
     this.finishTodoItemDrag();
     this.reloadPaper();
   }
 
   aboutToDisappear(): void {
     this.componentActive = false;
+    this.noteInteractionActive = false;
+    this.noteBlurGeneration += 1;
     this.finishTodoItemDrag();
     this.imageOperationGeneration += 1;
     this.surfaceTransitionGeneration += 1;
@@ -222,8 +250,11 @@ struct Paper {
     }
     this.paper = loaded;
     this.title = loaded.title;
+    this.titleBeforeEdit = loaded.title;
+    this.titleEditing = false;
     this.items = loaded.items;
     this.content = loaded.content;
+    this.isNoteBrowsing = loaded.type !== PAPER_TYPE_NOTE || loaded.content.length > 0;
     this.alwaysOnTop = loaded.alwaysOnTop;
     this.isCollapsed = loaded.isCollapsed && this.useCapsuleMode;
     this.textZoom = loaded.textZoom;
@@ -238,7 +269,13 @@ struct Paper {
         loaded.capsuleWidth = measuredWidth;
         PaperStore.updatePaper(loaded, false);
       }
-      setTimeout((): void => this.syncCollapsedWindow(false, false), 100);
+      if (this.useDeepCapsuleMode) {
+        setTimeout((): void => {
+          DesktopShell.syncCapsules(this.hostContext());
+        }, 50);
+      } else {
+        setTimeout((): void => this.syncCollapsedWindow(false, false), 100);
+      }
     } else {
       this.presentedWindowX = loaded.expandedX;
       this.presentedWindowY = loaded.expandedY;
@@ -259,7 +296,11 @@ struct Paper {
       return;
     }
     if (this.isCollapsed) {
-      this.syncCollapsedWindow(false);
+      if (this.useDeepCapsuleMode) {
+        DesktopShell.syncCapsules(this.hostContext());
+      } else {
+        this.syncCollapsedWindow(false);
+      }
     }
   }
 
@@ -270,7 +311,7 @@ struct Paper {
   private onPaperWindowEvent(): void {
     if (AppStorage.get<string>('paperWindowEventPaperId') !== this.paperId ||
       AppStorage.get<boolean>('paperWindowEventActive') !== false || this.isNoteBrowsing ||
-      this.imageImporting || this.paper === null || this.paper.type !== PAPER_TYPE_NOTE) {
+      this.noteInteractionActive || this.imageImporting || this.paper === null || this.paper.type !== PAPER_TYPE_NOTE) {
       return;
     }
     try {
@@ -278,8 +319,7 @@ struct Paper {
     } catch (error) {
       console.warn('stop note editing failed: ' + String(error));
     }
-    this.isNoteBrowsing = true;
-    this.refreshMarkdown();
+    this.finishNoteEdit();
   }
 
   private onUiLanguageChanged(): void {
@@ -303,6 +343,10 @@ struct Paper {
       }
       return;
     }
+    if (this.useDeepCapsuleMode) {
+      DesktopShell.syncCapsules(this.hostContext());
+      return;
+    }
     this.syncCollapsedWindow(false, false);
   }
 
@@ -310,7 +354,11 @@ struct Paper {
     if (this.paper === null) {
       return;
     }
-    this.paper.title = truncateText(this.title, TITLE_MAX_LENGTH);
+    if (!this.titleEditing) {
+      const titleLimit: number = Math.max(2, Math.min(TITLE_MAX_LENGTH, Math.round(this.titleCharacterLimit)));
+      this.title = cleanCommittedPaperTitle(this.title, titleLimit);
+      this.paper.title = this.title;
+    }
     this.paper.items = this.items;
     this.paper.content = truncateText(this.content, NOTE_MAX_LENGTH);
     this.paper.alwaysOnTop = this.alwaysOnTop;
@@ -442,31 +490,15 @@ struct Paper {
     return this.paper !== null && this.paper.type === PAPER_TYPE_NOTE ? '✎' : '☑';
   }
 
-  private pinLabel(): string {
-    return this.alwaysOnTop ? '📌' : '⌖';
-  }
-
   private titleOrFallback(): string {
-    if (this.title.trim().length > 0) {
-      return this.title.trim();
+    if (this.paper === null) {
+      return this.text('paper.todo');
     }
-    if (this.paper !== null && this.paper.type === PAPER_TYPE_NOTE) {
-      const firstLine: string = this.content.split('\n')[0].trim();
-      return firstLine.length > 0 ? firstLine : this.text('paper.note');
+    const currentTitle: string = cleanPaperTitle(this.title);
+    if (currentTitle.length > 0) {
+      return currentTitle;
     }
-    for (let i: number = 0; i < this.items.length; i++) {
-      if (this.items[i].text.trim().length > 0 && !this.items[i].done) {
-        return this.items[i].text.trim();
-      }
-    }
-    for (let i: number = 0; i < this.items.length; i++) {
-      if (this.items[i].text.trim().length > 0) {
-        return this.items[i].text.trim();
-      }
-    }
-    const unfinished: number = this.unfinishedCount();
-    return unfinished > 0 ? this.formatted('paper.todoCount', 'count', unfinished.toString()) :
-      this.text('paper.todo');
+    return effectivePaperTitle(this.paper, PaperStore.listPapers(), this.uiLanguage, this.systemLanguage);
   }
 
   private capsuleTitle(): string {
@@ -539,12 +571,157 @@ struct Paper {
     return 40;
   }
 
+  private beginTitleEdit(): void {
+    if (this.titleEditing) {
+      return;
+    }
+    this.titleBeforeEdit = this.title;
+    if (this.title.trim().length === 0) {
+      this.title = this.titleOrFallback();
+    }
+    this.titleEditing = true;
+    setTimeout((): void => {
+      try {
+        this.getUIContext().getFocusController().requestFocus('paper_title_input');
+        this.titleController.setTextSelection(0, this.title.length);
+      } catch (error) {
+        console.warn('focus paper title failed: ' + String(error));
+      }
+    }, 0);
+  }
+
+  private finishTitleEdit(): void {
+    if (!this.titleEditing) {
+      return;
+    }
+    const titleLimit: number = Math.max(2, Math.min(TITLE_MAX_LENGTH, Math.round(this.titleCharacterLimit)));
+    this.title = cleanCommittedPaperTitle(this.title, titleLimit);
+    this.titleEditing = false;
+    this.titleBeforeEdit = this.title;
+    this.savePaper(true);
+  }
+
+  private cancelTitleEdit(): void {
+    if (!this.titleEditing) {
+      return;
+    }
+    this.title = this.titleBeforeEdit;
+    this.titleEditing = false;
+  }
+
+  private handleTitleKey(event: KeyEvent): boolean {
+    if (event.type === KeyType.Down && event.keyCode === KeyCode.KEYCODE_ESCAPE) {
+      this.cancelTitleEdit();
+      return true;
+    }
+    return false;
+  }
+
+  private finishNoteEdit(): void {
+    if (this.isNoteBrowsing || this.paper === null || this.paper.type !== PAPER_TYPE_NOTE) {
+      return;
+    }
+    this.isNoteBrowsing = true;
+    this.refreshMarkdown();
+    this.savePaper(true);
+  }
+
+  private beginNoteInteraction(): void {
+    this.noteInteractionActive = true;
+    this.noteBlurGeneration += 1;
+  }
+
+  private resumeNoteEditing(): void {
+    this.noteInteractionActive = false;
+    this.noteBlurGeneration += 1;
+    if (!this.componentActive || this.isNoteBrowsing || this.imageImporting || this.paper === null ||
+      this.paper.type !== PAPER_TYPE_NOTE) {
+      return;
+    }
+    setTimeout((): void => {
+      if (!this.componentActive || this.isNoteBrowsing || this.imageImporting) {
+        return;
+      }
+      try {
+        this.getUIContext().getFocusController().requestFocus('paper_note_editor');
+      } catch (error) {
+        console.warn('restore note editor focus failed: ' + String(error));
+      }
+    }, 0);
+  }
+
+  private handleNoteEditorBlur(): void {
+    const generation: number = ++this.noteBlurGeneration;
+    setTimeout((): void => {
+      if (generation !== this.noteBlurGeneration || !this.componentActive || this.noteInteractionActive ||
+        this.imageImporting || this.isNoteBrowsing) {
+        return;
+      }
+      this.finishNoteEdit();
+    }, 140);
+  }
+
+  private finishNoteImageInteraction(): void {
+    this.imageImporting = false;
+    this.resumeNoteEditing();
+  }
+
+  private noteEditorActionLabel(action: string): string {
+    const selected: string = (this.uiLanguage === 'system' ? this.systemLanguage : this.uiLanguage).toLowerCase();
+    if (selected.startsWith('ja')) {
+      return action === 'copy' ? 'コピー' : 'すべて選択';
+    }
+    if (selected.startsWith('ko')) {
+      return action === 'copy' ? '복사' : '전체 선택';
+    }
+    if (selected.startsWith('en')) {
+      return action === 'copy' ? 'Copy' : 'Select all';
+    }
+    return action === 'copy' ? '复制' : '全选';
+  }
+
+  private copyNoteSelection(): void {
+    const selection: NoteTextSelection = this.currentNoteSelection();
+    const start: number = Math.min(selection.start, selection.end);
+    const end: number = Math.max(selection.start, selection.end);
+    if (end <= start) {
+      return;
+    }
+    try {
+      const data: pasteboard.PasteData = pasteboard.createData(
+        pasteboard.MIMETYPE_TEXT_PLAIN, this.content.substring(start, end));
+      pasteboard.getSystemPasteboard().setData(data).catch((error: BusinessError): void => {
+        console.warn('copy note selection failed: ' + error.message);
+      });
+    } catch (error) {
+      console.warn('copy note selection failed: ' + String(error));
+    }
+  }
+
+  private selectAllNote(): void {
+    this.noteController.setTextSelection(0, this.content.length);
+  }
+
+  private beginPaperLinkDrag(event: DragEvent): DragItemInfo {
+    if (this.paper === null || !this.enablePaperLinks) {
+      return { extraInfo: '' };
+    }
+    const data: unifiedDataChannel.UnifiedData = createPaperLinkDragData(
+      this.paper.id,
+      this.paper.type,
+      this.paperDisplayTitle(this.paper)
+    );
+    event.setData(data);
+    event.dragBehavior = DragBehavior.COPY;
+    return { extraInfo: this.paper.id };
+  }
+
   private toggleTopmost(): void {
     this.alwaysOnTop = !this.alwaysOnTop;
     this.savePaper(true);
     const win: window.Window | undefined = this.currentWindow();
     if (win !== undefined) {
-      win.setWindowTopmost(this.alwaysOnTop || (this.isCollapsed && this.useDeepCapsuleMode))
+      win.setWindowTopmost(this.alwaysOnTop || this.isCollapsed)
         .catch((error: BusinessError): void => {
         console.error('setWindowTopmost failed: ' + error.message);
       });
@@ -556,37 +733,51 @@ struct Paper {
       return;
     }
     this.savePaper(false);
-    PaperStore.setPaperVisible(this.paperId, false);
     PaperStore.flushNow();
-    this.terminatePaper();
+    DesktopShell.hidePaper(this.hostContext(), this.paperId).catch((error: Error): void => {
+      this.statusMessage = String(error);
+    });
+  }
+
+  private performDeletePaper(): void {
+    PaperStore.flushNow();
+    DesktopShell.deletePaper(this.hostContext(), this.paperId).catch((error: Error): void => {
+      this.statusMessage = String(error);
+    });
   }
 
   private deletePaper(): void {
-    if (!this.deleteConfirm) {
-      this.deleteConfirm = true;
+    if (this.paper === null) {
       return;
     }
-    PaperStore.deletePaper(this.paperId);
-    PaperStore.flushNow();
-    this.terminatePaper();
+    this.savePaper(false);
+    if (isPaperEmpty(this.paper)) {
+      this.performDeletePaper();
+      return;
+    }
+    AlertDialog.show({
+      title: this.text('dialog.deletePaperTitle'),
+      message: this.text('dialog.deletePaperMessage'),
+      autoCancel: true,
+      primaryButton: {
+        value: this.text('action.cancel'),
+        action: (): void => {
+        }
+      },
+      secondaryButton: {
+        value: this.text('action.deletePaper'),
+        fontColor: this.dangerColor(),
+        action: (): void => this.performDeletePaper()
+      }
+    });
   }
 
   private createPaper(type: string): void {
-    const created: PaperData | null = PaperStore.createPaper(type, this.paperId);
-    if (created === null) {
-      this.statusMessage = this.text('status.createPaperBlocked');
-      return;
-    }
-    const want: Want = {
-      bundleName: 'com.snownico.papertodo',
-      moduleName: 'entry',
-      abilityName: 'PaperAbility',
-      parameters: {
-        paperId: created.id,
-        paperCommand: 'show'
+    DesktopShell.createPaper(this.hostContext(), type, this.paperId).then((created: PaperData | null): void => {
+      if (created === null) {
+        this.statusMessage = this.text('status.createPaperBlocked');
       }
-    };
-    this.hostContext().startAbility(want).catch((error: BusinessError): void => {
+    }).catch((error: Error): void => {
       this.statusMessage = this.formatted('status.createPaperFailed', 'error', error.message);
     });
   }
@@ -622,10 +813,10 @@ struct Paper {
   }
 
   private setCollapsed(collapsed: boolean): void {
-    if (collapsed && !this.useCapsuleMode) {
+    if (this.paper === null) {
       return;
     }
-    if (this.paper === null) {
+    if (collapsed && !this.canCollapseToCapsule()) {
       return;
     }
     if (this.isCollapsed === collapsed) {
@@ -665,6 +856,9 @@ struct Paper {
     if (this.paper === null) {
       return;
     }
+    if (collapsed && !this.canCollapseToCapsule()) {
+      return;
+    }
     if (collapsed) {
       this.finishTodoItemDrag();
     }
@@ -679,9 +873,17 @@ struct Paper {
     this.savePaper(false);
     PaperStore.setPaperCollapsed(this.paperId, collapsed);
     if (collapsed) {
-      this.syncCollapsedWindow(false, this.enableAnimations);
+      if (this.useDeepCapsuleMode) {
+        DesktopShell.syncCapsules(this.hostContext()).catch((error: Error): void => {
+          console.error('sync deep capsule failed: ' + error.message);
+        });
+      } else {
+        this.syncCollapsedWindow(false, this.enableAnimations);
+        DesktopShell.syncCapsules(this.hostContext());
+      }
     } else {
       this.restoreExpandedWindow();
+      DesktopShell.syncCapsules(this.hostContext());
     }
   }
 
@@ -768,7 +970,7 @@ struct Paper {
       return;
     }
     try {
-      await win.setWindowTopmost(this.alwaysOnTop || this.useDeepCapsuleMode);
+      await win.setWindowTopmost(true);
     } catch (error) {
       console.error('capsule topmost failed: ' + String(error));
     }
@@ -1157,6 +1359,12 @@ struct Paper {
     };
   }
 
+  private syncCapsulesAfterAssociationChange(): void {
+    DesktopShell.syncCapsules(this.hostContext()).catch((error: Error): void => {
+      console.error('sync capsules after todo association change failed: ' + error.message);
+    });
+  }
+
   private toggleTodo(id: string): void {
     this.captureTodoHistory();
     let changed: PaperItem | null = null;
@@ -1200,6 +1408,9 @@ struct Paper {
       this.items = this.renumberItems(remaining);
     }
     this.savePaper(false);
+    if (this.autoClearCompletedTodos && changed.done && changed.linkedPaperId !== undefined) {
+      this.syncCapsulesAfterAssociationChange();
+    }
   }
 
   private updateTodoText(id: string, text: string): void {
@@ -1224,12 +1435,12 @@ struct Paper {
     this.savePaper(false);
   }
 
-  private todoController(id: string): TextInputController {
-    const existing: TextInputController | undefined = this.todoControllers.get(id);
+  private todoController(id: string): TextAreaController {
+    const existing: TextAreaController | undefined = this.todoControllers.get(id);
     if (existing !== undefined) {
       return existing;
     }
-    const created: TextInputController = new TextInputController();
+    const created: TextAreaController = new TextAreaController();
     this.todoControllers.set(id, created);
     return created;
   }
@@ -1238,18 +1449,41 @@ struct Paper {
     return 'todo_input_' + id;
   }
 
-  private requestTodoFocus(id: string, selectAll: boolean = false): void {
+  private requestTodoFocus(id: string, selectAll: boolean = false, caret: number = -1): void {
     setTimeout((): void => {
       try {
         this.getUIContext().getFocusController().requestFocus(this.todoFocusKey(id));
         if (selectAll) {
           const item: PaperItem | undefined = this.items.find((candidate: PaperItem): boolean => candidate.id === id);
           this.todoController(id).setTextSelection(0, item === undefined ? 0 : item.text.length);
+        } else if (caret >= 0) {
+          this.todoController(id).setTextSelection(caret, caret);
         }
       } catch (error) {
         console.warn('focus todo failed: ' + String(error));
       }
     }, 0);
+  }
+
+  private focusTodoForContextMenu(id: string): void {
+    this.contextMenuTodoId = id;
+    this.focusedTodoId = id;
+    try {
+      this.getUIContext().getFocusController().requestFocus(this.todoFocusKey(id));
+    } catch (error) {
+      this.requestTodoFocus(id);
+    }
+  }
+
+  private finishTodoContextMenu(id: string): void {
+    if (this.contextMenuTodoId === id) {
+      this.contextMenuTodoId = '';
+    }
+    if (this.todoIndexById(id) >= 0) {
+      this.requestTodoFocus(id);
+    } else if (this.items.length > 0) {
+      this.requestTodoFocus(this.items[0].id);
+    }
   }
 
   private deleteTodo(id: string): void {
@@ -1276,7 +1510,9 @@ struct Paper {
     }
     this.items = next;
     this.todoControllers.delete(id);
+    this.clearQuickLaunchFailures(id);
     this.savePaper(false);
+    this.syncCapsulesAfterAssociationChange();
     const focusIndex: number = Math.min(deletedIndex, next.length - 1);
     this.requestTodoFocus(next[focusIndex].id);
   }
@@ -1318,6 +1554,7 @@ struct Paper {
     }
     this.items = next;
     this.savePaper(false);
+    this.syncCapsulesAfterAssociationChange();
   }
 
   private moveTodo(from: number, to: number): void {
@@ -1419,32 +1656,91 @@ struct Paper {
     return next;
   }
 
-  private addDraftTodos(): void {
-    const raw: string = this.draft.replace(/\r\n/g, '\n');
-    const lines: string[] = raw.split('\n');
+  private appendBlankTodo(): void {
+    this.captureTodoHistory();
     const next: PaperItem[] = cloneTodoItems(this.items);
-    let added: number = 0;
-    for (let i: number = 0; i < lines.length && added < TODO_PASTE_MAX_ITEMS; i++) {
-      const cleaned: string = truncateText(this.cleanTodoPrefix(lines[i]).trim(), TODO_ITEM_MAX_LENGTH);
-      if (cleaned.length === 0) {
-        continue;
-      }
-      next.push(PaperStore.createTodoItem(cleaned, next.length));
-      added += 1;
+    const created: PaperItem = PaperStore.createTodoItem('', next.length);
+    next.push(created);
+    this.items = this.renumberItems(next);
+    this.savePaper(false);
+    this.requestTodoFocus(created.id);
+  }
+
+  private pasteTodoLines(itemId: string, content: string, event: PasteEvent): void {
+    const normalized: string = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    if (normalized.indexOf('\n') < 0) {
+      return;
     }
-    if (added === 0 && raw.trim().length === 0) {
-      next.push(PaperStore.createTodoItem('', next.length));
+    if (event.preventDefault !== undefined) {
+      event.preventDefault();
+    }
+    const lines: string[] = normalized.split('\n');
+    const cleaned: string[] = [];
+    for (let i: number = 0; i < lines.length && cleaned.length < TODO_PASTE_MAX_ITEMS; i++) {
+      const value: string = truncateText(this.cleanTodoPrefix(lines[i]).trim(), TODO_ITEM_MAX_LENGTH);
+      if (value.length > 0) {
+        cleaned.push(value);
+      }
+    }
+    if (cleaned.length === 0) {
+      return;
     }
     if (lines.length > TODO_PASTE_MAX_ITEMS) {
       this.statusMessage = this.formatted('status.todoPasteLimit', 'count', TODO_PASTE_MAX_ITEMS.toString());
     }
-    if (added === 0 && raw.trim().length > 0) {
-      return;
+    let sourceText: string = '';
+    for (let i: number = 0; i < this.items.length; i++) {
+      if (this.items[i].id === itemId) {
+        sourceText = this.items[i].text;
+        break;
+      }
+    }
+    const controller: TextAreaController = this.todoController(itemId);
+    let selectionStart: number = 0;
+    let selectionEnd: number = 0;
+    try {
+      const selection: TextRange = controller.getSelection();
+      const caret: number = controller.getCaretOffset().index;
+      selectionStart = selection.start === undefined ? caret : selection.start;
+      selectionEnd = selection.end === undefined ? selectionStart : selection.end;
+    } catch (error) {
+      selectionStart = sourceText.length;
+      selectionEnd = sourceText.length;
+    }
+    selectionStart = this.clamp(selectionStart, 0, sourceText.length);
+    selectionEnd = this.clamp(selectionEnd, selectionStart, sourceText.length);
+    const prefix: string = sourceText.substring(0, selectionStart);
+    const suffix: string = sourceText.substring(selectionEnd);
+    const pastedTexts: string[] = cleaned.slice();
+    if (pastedTexts.length === 1) {
+      pastedTexts[0] = truncateText(prefix + pastedTexts[0] + suffix, TODO_ITEM_MAX_LENGTH);
+    } else {
+      pastedTexts[0] = truncateText(prefix + pastedTexts[0], TODO_ITEM_MAX_LENGTH);
+      const finalIndex: number = pastedTexts.length - 1;
+      pastedTexts[finalIndex] = truncateText(pastedTexts[finalIndex] + suffix, TODO_ITEM_MAX_LENGTH);
     }
     this.captureTodoHistory();
+    const next: PaperItem[] = [];
+    let lastCreatedId: string = itemId;
+    for (let i: number = 0; i < this.items.length; i++) {
+      const item: PaperItem = this.items[i];
+      if (item.id === itemId) {
+        next.push(this.copyTodoItem(item, next.length, pastedTexts[0]));
+        for (let lineIndex: number = 1; lineIndex < pastedTexts.length; lineIndex++) {
+          const created: PaperItem = PaperStore.createTodoItem(pastedTexts[lineIndex], next.length);
+          lastCreatedId = created.id;
+          next.push(created);
+        }
+      } else {
+        next.push(this.copyTodoItem(item, next.length));
+      }
+    }
     this.items = this.renumberItems(next);
-    this.draft = '';
     this.savePaper(false);
+    const caret: number = pastedTexts.length === 1 ?
+      Math.min(pastedTexts[0].length, prefix.length + cleaned[0].length) :
+      Math.max(0, pastedTexts[pastedTexts.length - 1].length - suffix.length);
+    this.requestTodoFocus(lastCreatedId, false, caret);
   }
 
   private captureTodoHistory(coalesceKey: string = ''): void {
@@ -1464,6 +1760,7 @@ struct Paper {
     }
     this.items = this.renumberItems(previous);
     this.savePaper(false);
+    this.syncCapsulesAfterAssociationChange();
     this.refreshHistoryState();
   }
 
@@ -1474,6 +1771,7 @@ struct Paper {
     }
     this.items = this.renumberItems(next);
     this.savePaper(false);
+    this.syncCapsulesAfterAssociationChange();
     this.refreshHistoryState();
   }
 
@@ -1482,26 +1780,33 @@ struct Paper {
       return false;
     }
     let shiftPressed: boolean = false;
+    let controlPressed: boolean = false;
     if (event.getModifierKeyState !== undefined) {
       try {
         shiftPressed = event.getModifierKeyState(['Shift']);
+        controlPressed = event.getModifierKeyState(['Ctrl']);
       } catch (error) {
         shiftPressed = false;
+        controlPressed = false;
       }
     }
     if (event.keyCode === KeyCode.KEYCODE_MENU ||
       (event.keyCode === KeyCode.KEYCODE_F10 && shiftPressed)) {
       this.keyboardMenuTodoId = item.id;
+      this.contextMenuTodoId = item.id;
       return true;
     }
     if (event.keyCode === KeyCode.KEYCODE_ESCAPE && this.useCapsuleMode) {
       this.setCollapsed(true);
       return true;
     }
-    // Keep Ctrl+Z / Ctrl+Y available to TextInput's native per-field history. List-level undo and redo remain
-    // available from the toolbar, which avoids replacing an in-progress text edit with an older whole-list snapshot.
+    if (!controlPressed && (event.keyCode === KeyCode.KEYCODE_ENTER ||
+      event.keyCode === KeyCode.KEYCODE_NUMPAD_ENTER)) {
+      this.insertTodoAfter(item.id);
+      return true;
+    }
     if (event.keyCode === KeyCode.KEYCODE_DEL && item.text.length === 0 &&
-      item.linkedPaperId === undefined && item.quickLaunchUri === undefined && this.items.length > 1) {
+      !item.done && item.linkedPaperId === undefined && item.quickLaunchUri === undefined && this.items.length > 1) {
       this.deleteTodo(item.id);
       return true;
     }
@@ -1520,19 +1825,20 @@ struct Paper {
   }
 
   private paperDisplayTitle(paper: PaperData): string {
-    if (paper.title.trim().length > 0) {
-      return paper.title.trim();
-    }
-    if (paper.type === PAPER_TYPE_NOTE) {
-      const firstLine: string = paper.content.split('\n')[0].trim();
-      return firstLine.length > 0 ? firstLine : this.text('paper.unnamedNote');
-    }
-    for (let i: number = 0; i < paper.items.length; i++) {
-      if (paper.items[i].text.trim().length > 0) {
-        return paper.items[i].text.trim();
+    return effectivePaperTitle(paper, PaperStore.listPapers(), this.uiLanguage, this.systemLanguage);
+  }
+
+  private isPaperLinked(): boolean {
+    const papers: PaperData[] = PaperStore.listPapers();
+    for (let paperIndex: number = 0; paperIndex < papers.length; paperIndex++) {
+      const candidate: PaperData = papers[paperIndex];
+      for (let itemIndex: number = 0; itemIndex < candidate.items.length; itemIndex++) {
+        if (candidate.items[itemIndex].linkedPaperId === this.paperId) {
+          return true;
+        }
       }
     }
-    return this.text('paper.unnamedTodo');
+    return false;
   }
 
   private linkedPaper(item: PaperItem): PaperData | null {
@@ -1542,11 +1848,58 @@ struct Paper {
     return PaperStore.getPaper(item.linkedPaperId);
   }
 
+  private linkedPaperIsActive(item: PaperItem): boolean {
+    const target: PaperData | null = this.linkedPaper(item);
+    return target !== null && target.isVisible && !target.isCollapsed;
+  }
+
+  private quickLaunchFailurePrefix(itemId: string): string {
+    return itemId + '\n';
+  }
+
+  private quickLaunchFailureKey(item: PaperItem): string {
+    return this.quickLaunchFailurePrefix(item.id) + (item.quickLaunchUri ?? '');
+  }
+
+  private quickLaunchHasFailed(item: PaperItem): boolean {
+    if (item.quickLaunchUri === undefined || item.quickLaunchUri.length === 0) {
+      return false;
+    }
+    return this.failedQuickLaunchKeys.indexOf(this.quickLaunchFailureKey(item)) >= 0;
+  }
+
+  private markQuickLaunchFailed(item: PaperItem): void {
+    const key: string = this.quickLaunchFailureKey(item);
+    if (this.failedQuickLaunchKeys.indexOf(key) >= 0) {
+      return;
+    }
+    const next: string[] = this.failedQuickLaunchKeys.slice();
+    next.push(key);
+    if (next.length > 32) {
+      next.shift();
+    }
+    this.failedQuickLaunchKeys = next;
+  }
+
+  private clearQuickLaunchFailures(itemId: string): void {
+    const prefix: string = this.quickLaunchFailurePrefix(itemId);
+    const next: string[] = [];
+    for (let i: number = 0; i < this.failedQuickLaunchKeys.length; i++) {
+      if (!this.failedQuickLaunchKeys[i].startsWith(prefix)) {
+        next.push(this.failedQuickLaunchKeys[i]);
+      }
+    }
+    if (next.length !== this.failedQuickLaunchKeys.length) {
+      this.failedQuickLaunchKeys = next;
+    }
+  }
+
   private linkedPaperButtonLabel(item: PaperItem): string {
     if (item.quickLaunchUri !== undefined) {
       const name: string = this.quickLaunchDisplayName(item);
       const icon: string = item.quickLaunchKind === QUICK_LAUNCH_FOLDER ? '▣ ' : '▤ ';
-      return icon + (name.length > 5 ? truncateText(name, 5) : name);
+      const prefix: string = this.quickLaunchHasFailed(item) ? '⚠ ' : icon;
+      return prefix + (name.length > 5 ? truncateText(name, 5) : name);
     }
     const target: PaperData | null = this.linkedPaper(item);
     if (target === null) {
@@ -1559,6 +1912,9 @@ struct Paper {
   private responsiveAssociationLabel(item: PaperItem): string {
     if (this.layoutWidth < 260) {
       if (item.quickLaunchUri !== undefined) {
+        if (this.quickLaunchHasFailed(item)) {
+          return '⚠';
+        }
         return item.quickLaunchKind === QUICK_LAUNCH_FOLDER ? '▣' : '▤';
       }
       return item.linkedPaperId !== undefined ? '↗' : '⌖';
@@ -1587,7 +1943,9 @@ struct Paper {
     this.captureTodoHistory();
     this.items = next;
     this.linkingTodoId = '';
+    this.clearQuickLaunchFailures(itemId);
     this.savePaper(true);
+    this.syncCapsulesAfterAssociationChange();
   }
 
   private chooseQuickLaunch(itemId: string, kind: string): void {
@@ -1742,9 +2100,127 @@ struct Paper {
       operationMode: fileShare.OperationMode.READ_MODE
     };
     try {
-      await fileShare.activatePermission([policy]);
+      const persisted: boolean[] = await fileShare.checkPersistentPermission([policy]);
+      if (persisted.length > 0 && persisted[0]) {
+        await fileShare.activatePermission([policy]);
+      }
     } catch (error) {
-      throw new Error(String(error));
+      // Some providers expose only a temporary picker grant or do not support
+      // the permission query. The direct activation remains the best effort
+      // fallback before access is validated below.
+      await fileShare.activatePermission([policy]);
+    }
+  }
+
+  private isDefinitiveQuickLaunchAccessError(error: BusinessError): boolean {
+    return error.code === 13900002 || error.code === 13900012 || error.code === 13900020 ||
+      error.code === 14300002;
+  }
+
+  private quickLaunchUriAccessState(uri: string): boolean | null {
+    let accessError: BusinessError | null = null;
+    try {
+      if (fileIo.accessSync(uri, fileIo.AccessModeType.READ)) {
+        return true;
+      }
+    } catch (error) {
+      accessError = error as BusinessError;
+    }
+    try {
+      fileIo.statSync(uri);
+      return true;
+    } catch (error) {
+      const statError: BusinessError = error as BusinessError;
+      if ((accessError !== null && this.isDefinitiveQuickLaunchAccessError(accessError)) ||
+        this.isDefinitiveQuickLaunchAccessError(statError)) {
+        return false;
+      }
+    }
+    // Provider-specific or cloud URIs can reject fileIo probing while still
+    // being openable by a registered viewer. Let viewData be the final check.
+    return null;
+  }
+
+  private async prepareQuickLaunchUri(uri: string): Promise<boolean | null> {
+    try {
+      await this.activateQuickLaunchPermission(uri);
+    } catch (error) {
+      console.warn('activate quick-launch permission failed: ' + String(error));
+    }
+    return this.quickLaunchUriAccessState(uri);
+  }
+
+  private syntacticQuickLaunchParent(uri: string): string {
+    let end: number = uri.length;
+    const queryIndex: number = uri.indexOf('?');
+    const fragmentIndex: number = uri.indexOf('#');
+    if (queryIndex >= 0) {
+      end = Math.min(end, queryIndex);
+    }
+    if (fragmentIndex >= 0) {
+      end = Math.min(end, fragmentIndex);
+    }
+    let core: string = uri.substring(0, end);
+    while (core.length > 0 && core.endsWith('/')) {
+      core = core.substring(0, core.length - 1);
+    }
+    const schemeIndex: number = core.indexOf('://');
+    const minimumSlash: number = schemeIndex >= 0 ? schemeIndex + 3 : 0;
+    const slash: number = core.lastIndexOf('/');
+    if (slash <= minimumSlash) {
+      return '';
+    }
+    return core.substring(0, slash);
+  }
+
+  private quickLaunchParentUris(uri: string): string[] {
+    const parents: string[] = [];
+    let current: string = uri;
+    for (let depth: number = 0; depth < 8; depth++) {
+      let parent: string = '';
+      try {
+        parent = new fileUri.FileUri(current).getFullDirectoryUri();
+      } catch (error) {
+        parent = '';
+      }
+      if (parent.length === 0 || parent === current) {
+        parent = this.syntacticQuickLaunchParent(current);
+      }
+      if (parent.length === 0 || parent === current || parents.indexOf(parent) >= 0) {
+        break;
+      }
+      parents.push(parent);
+      current = parent;
+    }
+    return parents;
+  }
+
+  private quickLaunchStillMatches(item: PaperItem): boolean {
+    for (let i: number = 0; i < this.items.length; i++) {
+      if (this.items[i].id === item.id) {
+        return this.items[i].quickLaunchUri === item.quickLaunchUri;
+      }
+    }
+    return false;
+  }
+
+  private presentQuickLaunchFailure(item: PaperItem, message: string): void {
+    if (!this.quickLaunchStillMatches(item)) {
+      return;
+    }
+    this.markQuickLaunchFailed(item);
+    this.statusMessage = message;
+    this.linkingTodoId = item.id;
+  }
+
+  private clearQuickLaunchFailureAfterSuccess(item: PaperItem): void {
+    if (!this.quickLaunchStillMatches(item)) {
+      return;
+    }
+    this.clearQuickLaunchFailures(item.id);
+    this.statusMessage = '';
+    if (this.linkingTodoId === item.id) {
+      this.linkingTodoId = '';
     }
   }
 
@@ -1769,7 +2245,9 @@ struct Paper {
     this.captureTodoHistory();
     this.items = next;
     this.linkingTodoId = '';
+    this.clearQuickLaunchFailures(itemId);
     this.savePaper(true);
+    this.syncCapsulesAfterAssociationChange();
   }
 
   private nameFromUri(uri: string): string {
@@ -1803,21 +2281,26 @@ struct Paper {
       this.linkingTodoId = item.id;
       return;
     }
-    try {
-      await this.activateQuickLaunchPermission(item.quickLaunchUri);
-    } catch (error) {
-      // A target selected on a device without persistent URI grants can still
-      // remain usable for the lifetime of the current picker authorization.
+    const accessState: boolean | null = await this.prepareQuickLaunchUri(item.quickLaunchUri);
+    if (accessState === false) {
+      this.presentQuickLaunchFailure(item, this.text('status.quickLaunchMissing'));
+      return;
     }
     const want: Want = {
       action: 'ohos.want.action.viewData',
       uri: item.quickLaunchUri,
       flags: wantConstant.Flags.FLAG_AUTH_READ_URI_PERMISSION
     };
-    await this.hostContext().startAbility(want).catch((error: BusinessError): void => {
-      this.statusMessage = this.formatted('status.quickLaunchOpenFailed', 'error', error.message);
-      this.linkingTodoId = item.id;
-    });
+    if (item.quickLaunchKind === QUICK_LAUNCH_FOLDER) {
+      want.type = uniformTypeDescriptor.UniformDataType.DIRECTORY;
+    }
+    try {
+      await this.hostContext().startAbility(want);
+      this.clearQuickLaunchFailureAfterSuccess(item);
+    } catch (error) {
+      this.presentQuickLaunchFailure(item,
+        this.formatted('status.quickLaunchOpenFailed', 'error', String(error)));
+    }
   }
 
   private async openQuickLaunchContainingFolder(item: PaperItem): Promise<void> {
@@ -1826,41 +2309,37 @@ struct Paper {
       this.linkingTodoId = item.id;
       return;
     }
-    try {
-      try {
-        await this.activateQuickLaunchPermission(item.quickLaunchUri);
-      } catch (error) {
-        // Keep trying: a provider may still retain the picker grant for this URI.
+    const accessState: boolean | null = await this.prepareQuickLaunchUri(item.quickLaunchUri);
+    const parentUris: string[] = this.quickLaunchParentUris(item.quickLaunchUri);
+    let lastError: string = '';
+    for (let i: number = 0; i < parentUris.length; i++) {
+      const directoryUri: string = parentUris[i];
+      const parentAccessState: boolean | null = await this.prepareQuickLaunchUri(directoryUri);
+      if (parentAccessState === false) {
+        continue;
       }
-      const directoryUri: string = new fileUri.FileUri(item.quickLaunchUri).getFullDirectoryUri();
       const want: Want = {
         action: 'ohos.want.action.viewData',
         uri: directoryUri,
         type: uniformTypeDescriptor.UniformDataType.DIRECTORY,
         flags: wantConstant.Flags.FLAG_AUTH_READ_URI_PERMISSION
       };
-      await this.hostContext().startAbility(want);
-    } catch (error) {
-      this.statusMessage = this.formatted('status.quickLaunchContainingFolderFailed', 'error', String(error));
-    }
-  }
-
-  private externalMarkdownFileName(): string {
-    let safeTitle: string = '';
-    const source: string = this.title.trim();
-    for (let i: number = 0; i < source.length && safeTitle.length < 48; i++) {
-      const character: string = source.charAt(i);
-      const code: number = source.charCodeAt(i);
-      if (code >= 32 && character !== '/' && character !== '\\' && character !== ':' &&
-        character !== '*' && character !== '?' && character !== '"' && character !== '<' &&
-        character !== '>' && character !== '|') {
-        safeTitle += character;
+      try {
+        await this.hostContext().startAbility(want);
+        if (accessState === false) {
+          this.presentQuickLaunchFailure(item, this.text('status.quickLaunchMissing'));
+        } else {
+          this.clearQuickLaunchFailureAfterSuccess(item);
+        }
+        return;
+      } catch (error) {
+        lastError = String(error);
       }
     }
-    if (safeTitle.length === 0) {
-      safeTitle = 'PaperTodo';
-    }
-    return safeTitle + '-' + this.paperId.replace(/[^a-zA-Z0-9_-]/g, '').substring(0, 24) + '.md';
+    const detail: string = lastError.length > 0 ? lastError : item.quickLaunchUri;
+    const message: string = this.formatted('status.quickLaunchContainingFolderFailed', 'error', detail) +
+      ' · ' + this.text('status.quickLaunchMissing');
+    this.presentQuickLaunchFailure(item, message);
   }
 
   private async openMarkdownExternally(): Promise<void> {
@@ -1868,33 +2347,13 @@ struct Paper {
       return;
     }
     this.savePaper(true);
-    let outputFd: number = -1;
     try {
-      const path: string = this.hostContext().cacheDir + '/' + this.externalMarkdownFileName();
-      const output: fileIo.File = fileIo.openSync(path,
-        fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC);
-      outputFd = output.fd;
-      fileIo.writeSync(outputFd, this.content);
-      fileIo.closeSync(outputFd);
-      outputFd = -1;
-
-      const want: Want = {
-        action: 'ohos.want.action.viewData',
-        uri: fileUri.getUriFromPath(path),
-        type: 'text/markdown',
-        flags: wantConstant.Flags.FLAG_AUTH_READ_URI_PERMISSION
-      };
-      await this.hostContext().startAbility(want);
+      const latest: PaperData | null = PaperStore.getPaper(this.paperId);
+      if (latest !== null) {
+        await ExternalMarkdown.open(this.hostContext(), latest);
+      }
     } catch (error) {
       this.statusMessage = this.formatted('status.externalMarkdownOpenFailed', 'error', String(error));
-    } finally {
-      if (outputFd >= 0) {
-        try {
-          fileIo.closeSync(outputFd);
-        } catch (error) {
-          console.error('close external markdown failed: ' + String(error));
-        }
-      }
     }
   }
 
@@ -1923,25 +2382,17 @@ struct Paper {
       this.linkingTodoId = item.id;
       return;
     }
-    PaperStore.setPaperVisible(target.id, true);
-    let command: string = 'show';
-    if (AppStorage.get<boolean>('paperOpen:' + target.id) === true) {
-      if (target.isCollapsed) {
-        command = 'expand';
-      } else if (this.collapseExpandedEdgeCapsuleOnClick && this.useCapsuleMode && this.useDeepCapsuleMode) {
-        command = 'collapse';
-      }
+    const action: string = resolveLinkedPaperAction(target.isVisible, target.isCollapsed,
+      this.collapseExpandedEdgeCapsuleOnClick);
+    let request: Promise<void>;
+    if (action === PAPER_ACTION_COLLAPSE) {
+      request = DesktopShell.setPaperCollapsed(this.hostContext(), target.id, true);
+    } else if (action === PAPER_ACTION_EXPAND) {
+      request = DesktopShell.setPaperCollapsed(this.hostContext(), target.id, false);
+    } else {
+      request = DesktopShell.startPaper(this.hostContext(), target.id, 'show').then((): void => {});
     }
-    const want: Want = {
-      bundleName: 'com.snownico.papertodo',
-      moduleName: 'entry',
-      abilityName: 'PaperAbility',
-      parameters: {
-        paperId: target.id,
-        paperCommand: command
-      }
-    };
-    this.hostContext().startAbility(want).catch((error: BusinessError): void => {
+    request.catch((error: Error): void => {
       this.statusMessage = this.formatted('status.openLinkedPaperFailed', 'error', error.message);
     });
   }
@@ -2187,25 +2638,25 @@ struct Paper {
           return;
         }
         if (uris.length === 0) {
-          this.imageImporting = false;
+          this.finishNoteImageInteraction();
           this.statusMessage = '';
           return;
         }
         this.importNoteImages(uris, generation).catch((error: Error): void => {
           if (this.isCurrentImageOperation(generation)) {
-            this.imageImporting = false;
+            this.finishNoteImageInteraction();
             this.statusMessage = this.text('status.imageImportFailedGeneric');
           }
           console.error('import note image failed: ' + error.message);
         });
       }).catch((error: BusinessError): void => {
         if (this.isCurrentImageOperation(generation)) {
-          this.imageImporting = false;
+          this.finishNoteImageInteraction();
           this.statusMessage = this.formatted('status.imagePickerFailed', 'error', error.message);
         }
       });
     } catch (error) {
-      this.imageImporting = false;
+      this.finishNoteImageInteraction();
       this.statusMessage = this.formatted('status.imagePickerFailed', 'error', String(error));
     }
   }
@@ -2241,14 +2692,14 @@ struct Paper {
       return;
     }
     if (imported.length === 0) {
-      this.imageImporting = false;
+      this.finishNoteImageInteraction();
       this.statusMessage = lastFailure === undefined ? this.text('status.imageImportFailedGeneric') :
         this.imageImportErrorMessage(lastFailure);
       return;
     }
     const owner: PaperData | null = PaperStore.getPaper(ownerId);
     if (owner === null || owner.type !== PAPER_TYPE_NOTE) {
-      this.imageImporting = false;
+      this.finishNoteImageInteraction();
       for (let i: number = 0; i < imported.length; i++) {
         NoteImageStore.deleteAsset(context, imported[i], ownerId);
       }
@@ -2261,7 +2712,7 @@ struct Paper {
     const insertion: NoteInsertion = this.buildNoteBlockInsertionAt(
       markers.join('\n'), this.pendingNoteImageSelection());
     if (insertion.value.length > NOTE_MAX_LENGTH) {
-      this.imageImporting = false;
+      this.finishNoteImageInteraction();
       for (let i: number = 0; i < imported.length; i++) {
         NoteImageStore.deleteAsset(context, imported[i], ownerId);
       }
@@ -2294,12 +2745,12 @@ struct Paper {
       for (let i: number = 0; i < imported.length; i++) {
         NoteImageStore.deleteAsset(context, imported[i], ownerId);
       }
-      this.imageImporting = false;
+      this.finishNoteImageInteraction();
       this.statusMessage = this.text('status.imageStorageFull');
       return;
     }
     this.content = insertion.value;
-    this.imageImporting = false;
+    this.finishNoteImageInteraction();
     this.savePaper(true);
     this.refreshMarkdown();
     setTimeout((): void => this.noteController.caretPosition(insertion.caret), 0);
@@ -2351,7 +2802,7 @@ struct Paper {
       }
       return;
     }
-    this.imageImporting = false;
+    this.finishNoteImageInteraction();
     if (result.asset === undefined) {
       this.statusMessage = this.imageImportErrorMessage(result);
       return;
@@ -2401,6 +2852,20 @@ struct Paper {
     return generation;
   }
 
+  private pasteNoteImageFromClipboard(result: PasteButtonOnClickResult): void {
+    const generation: number = this.beginPasteNoteImage(result);
+    if (generation < 0) {
+      return;
+    }
+    try {
+      pasteboard.getSystemPasteboard().getData((error: BusinessError, data: pasteboard.PasteData): void => {
+        this.consumePastedNoteImage(generation, error, data);
+      });
+    } catch (error) {
+      this.finishImageImportException(generation, new Error(String(error)));
+    }
+  }
+
   private consumePastedNoteImage(generation: number, error: BusinessError,
     data: pasteboard.PasteData): void {
     if (error) {
@@ -2410,42 +2875,86 @@ struct Paper {
     if (!this.isCurrentImageOperation(generation)) {
       return;
     }
-    try {
-      let uri: string = '';
-      if (data.hasType(pasteboard.MIMETYPE_TEXT_URI)) {
-        uri = data.getPrimaryUri();
-        if (this.isSupportedImageUri(uri)) {
-          this.importNoteImage(uri, generation).catch((importError: Error): void => {
-            this.finishImageImportException(generation, importError);
-          });
-          return;
-        }
+    this.consumePastedNoteImageAsync(generation, data).catch((pasteError: Error): void => {
+      this.finishImageImportException(generation, pasteError);
+    });
+  }
+
+  private async consumePastedNoteImageAsync(generation: number, data: pasteboard.PasteData): Promise<void> {
+    const candidate: ClipboardImageCandidate | null = await this.findClipboardImage(data);
+    if (!this.isCurrentImageOperation(generation)) {
+      if (candidate !== null && candidate.pixelMap !== undefined) {
+        await candidate.pixelMap.release();
       }
-      if (data.hasType(pasteboard.MIMETYPE_PIXELMAP)) {
-        const pixelMap: image.PixelMap = data.getPrimaryPixelMap();
-        this.importNotePixelMap(pixelMap, generation).catch((importError: Error): void => {
-          this.finishImageImportException(generation, importError);
-        });
-        return;
-      }
-      // Some providers expose an image as a content URI without a filename
-      // extension. The importer sniffs and validates the actual image bytes.
-      if (uri.length > 0) {
-        this.importNoteImage(uri, generation).catch((importError: Error): void => {
-          this.finishImageImportException(generation, importError);
-        });
-        return;
-      }
-      this.imageImporting = false;
-      this.statusMessage = this.text('status.imagePasteUnsupported');
-    } catch (pasteError) {
-      this.finishImageImportException(generation, new Error(String(pasteError)));
+      return;
     }
+    if (candidate !== null && candidate.pixelMap !== undefined) {
+      await this.importNotePixelMap(candidate.pixelMap, generation);
+      return;
+    }
+    if (candidate !== null && candidate.uri !== undefined && candidate.uri.length > 0) {
+      // The importer validates the actual image bytes, so content URIs do not
+      // need a filename extension.
+      await this.importNoteImage(candidate.uri, generation);
+      return;
+    }
+    this.finishNoteImageInteraction();
+    this.statusMessage = this.text('status.imagePasteUnsupported');
+  }
+
+  private async findClipboardImage(data: pasteboard.PasteData): Promise<ClipboardImageCandidate | null> {
+    const recordCount: number = data.getRecordCount();
+    for (let i: number = 0; i < recordCount; i++) {
+      const record: pasteboard.PasteDataRecord = data.getRecord(i);
+      if (record.mimeType === pasteboard.MIMETYPE_PIXELMAP) {
+        return { pixelMap: record.pixelMap };
+      }
+      try {
+        const types: string[] = record.getValidTypes([pasteboard.MIMETYPE_PIXELMAP]);
+        if (types.length > 0) {
+          const value: pasteboard.ValueType = await record.getData(pasteboard.MIMETYPE_PIXELMAP);
+          return { pixelMap: value as image.PixelMap };
+        }
+      } catch (error) {
+        console.warn('read clipboard pixel map record failed: ' + String(error));
+      }
+    }
+    for (let i: number = 0; i < recordCount; i++) {
+      const record: pasteboard.PasteDataRecord = data.getRecord(i);
+      if (record.mimeType === pasteboard.MIMETYPE_TEXT_URI && record.uri.length > 0) {
+        return { uri: record.uri };
+      }
+      try {
+        const types: string[] = record.getValidTypes([pasteboard.MIMETYPE_TEXT_URI]);
+        if (types.length > 0) {
+          const value: pasteboard.ValueType = await record.getData(pasteboard.MIMETYPE_TEXT_URI);
+          if (typeof value === 'string' && value.length > 0) {
+            return { uri: value };
+          }
+        }
+      } catch (error) {
+        console.warn('read clipboard URI record failed: ' + String(error));
+      }
+    }
+    return null;
+  }
+
+  private startNativeWindowMove(event: TouchEvent): void {
+    if (event.type !== TouchType.Down || this.isCollapsed || this.titleEditing) {
+      return;
+    }
+    const win: window.Window | undefined = this.currentWindow();
+    if (win === undefined) {
+      return;
+    }
+    win.startMoving().catch((error: BusinessError): void => {
+      console.error('start native paper move failed: ' + error.message);
+    });
   }
 
   private finishImageImportException(generation: number, error: Error): void {
     if (this.isCurrentImageOperation(generation)) {
-      this.imageImporting = false;
+      this.finishNoteImageInteraction();
       this.statusMessage = this.text('status.imageImportFailedGeneric');
     }
     console.error('import note image failed: ' + error.message);
@@ -2514,7 +3023,7 @@ struct Paper {
       this.statusMessage = this.text('status.imageImporting');
       this.importNoteImages(uris, generation).catch((error: Error): void => {
         if (this.isCurrentImageOperation(generation)) {
-          this.imageImporting = false;
+          this.finishNoteImageInteraction();
           this.statusMessage = this.text('status.imageImportFailedGeneric');
         }
         console.error('import dropped image failed: ' + error.message);
@@ -2593,15 +3102,21 @@ struct Paper {
     return asset === null || asset.height <= 0 ? 1 : asset.width / asset.height;
   }
 
-  private markdownImageWidth(line: MarkdownLine): string {
+  private markdownImageWidth(line: MarkdownLine): number {
+    const availableWidth: number = Math.max(48, this.layoutWidth - 24);
     const percent: number = line.imagePercent === undefined ? 100 : line.imagePercent;
-    return percent.toString() + '%';
+    const declaredWidth: number | undefined = line.imageWidth;
+    const targetWidth: number = declaredWidth !== undefined && Number.isFinite(declaredWidth) ?
+      declaredWidth * percent / 100 : availableWidth * percent / 100;
+    return this.clamp(targetWidth, 48, availableWidth);
   }
 
   private markdownImageHeight(line: MarkdownLine): number {
-    const percent: number = line.imagePercent === undefined ? 100 : line.imagePercent;
-    const width: number = Math.max(48, (this.layoutWidth - 24) * percent / 100);
-    const naturalHeight: number = width / Math.max(0.01, this.markdownImageAspect(line));
+    const width: number = this.markdownImageWidth(line);
+    const declaredAspect: number | null = line.imageWidth !== undefined && line.imageHeight !== undefined &&
+      line.imageHeight > 0 ? line.imageWidth / line.imageHeight : null;
+    const naturalHeight: number = width / Math.max(0.01,
+      declaredAspect === null ? this.markdownImageAspect(line) : declaredAspect);
     const paperHeight: number = this.paper === null ? 360 : this.paper.expandedHeight;
     return this.clamp(naturalHeight, 48, Math.max(160, paperHeight - 120));
   }
@@ -2630,18 +3145,82 @@ struct Paper {
     });
   }
 
-  private enterNoteEditFromPreview(): void {
+  private noteLineOffset(line: MarkdownLine): number {
+    const marker: string = 'line_';
+    if (!line.id.startsWith(marker)) {
+      return this.content.length;
+    }
+    const lineIndex: number = Number(line.id.substring(marker.length));
+    if (!Number.isFinite(lineIndex) || lineIndex <= 0) {
+      return 0;
+    }
+    let offset: number = 0;
+    let currentLine: number = 0;
+    while (offset < this.content.length && currentLine < lineIndex) {
+      const nextBreak: number = this.content.indexOf('\n', offset);
+      if (nextBreak < 0) {
+        return this.content.length;
+      }
+      offset = nextBreak + 1;
+      currentLine += 1;
+    }
+    return offset;
+  }
+
+  private enterNoteEditFromPreview(offset: number = this.content.length): void {
     if (Date.now() - this.lastMarkdownLinkActivatedAt < 180) {
       return;
     }
     if (this.isNoteBrowsing) {
       this.toggleNoteBrowse();
+      setTimeout((): void => {
+        try {
+          this.getUIContext().getFocusController().requestFocus('paper_note_editor');
+          const target: number = this.clamp(offset, 0, this.content.length);
+          this.noteController.setTextSelection(target, target);
+        } catch (error) {
+          console.warn('focus note editor failed: ' + String(error));
+        }
+      }, 0);
     }
   }
 
   private handlePaperKey(event: KeyEvent): boolean {
     if (event.type !== KeyType.Down) {
       return false;
+    }
+    let altPressed: boolean = false;
+    let controlPressed: boolean = false;
+    let shiftPressed: boolean = false;
+    try {
+      altPressed = event.getModifierKeyState !== undefined && event.getModifierKeyState(['Alt']);
+      controlPressed = event.getModifierKeyState !== undefined && event.getModifierKeyState(['Ctrl']);
+      shiftPressed = event.getModifierKeyState !== undefined && event.getModifierKeyState(['Shift']);
+    } catch (error) {
+      altPressed = false;
+      controlPressed = false;
+      shiftPressed = false;
+    }
+    if (altPressed && event.keyCode === KeyCode.KEYCODE_F4) {
+      if (resolveSystemCloseAction() === PAPER_ACTION_HIDE) {
+        this.hidePaper();
+      }
+      return true;
+    }
+    if (controlPressed && this.paper !== null && this.paper.type === PAPER_TYPE_TODO &&
+      this.focusedTodoId.length === 0) {
+      if (event.keyCode === KeyCode.KEYCODE_Z) {
+        if (shiftPressed) {
+          this.redoTodo();
+        } else {
+          this.undoTodo();
+        }
+        return true;
+      }
+      if (event.keyCode === KeyCode.KEYCODE_Y) {
+        this.redoTodo();
+        return true;
+      }
     }
     if (event.keyCode === KeyCode.KEYCODE_ESCAPE && !this.isCollapsed && this.useCapsuleMode) {
       this.setCollapsed(true);
@@ -2737,6 +3316,7 @@ struct Paper {
       if (line.inlineTokens === undefined) {
         this.openMarkdownLink(line.linkUrl);
       }
+      this.enterNoteEditFromPreview(this.noteLineOffset(line));
     })
   }
 
@@ -2744,146 +3324,181 @@ struct Paper {
     return Math.max(minValue, Math.min(value, maxValue));
   }
 
+  private canCollapseToCapsule(): boolean {
+    return this.useCapsuleMode && this.paper !== null && PaperStore.canPaperDisplayAsCapsule(this.paper);
+  }
+
+  private topBarActionItemCount(): number {
+    let count: number = 0;
+    if (this.enablePaperLinks) {
+      count += 1;
+    }
+    if (this.showTopBarExternalOpenButton && this.paper !== null && this.paper.type === PAPER_TYPE_NOTE) {
+      count += 1;
+    }
+    if (this.showTopBarNewTodoButton) {
+      count += 1;
+    }
+    if (this.showTopBarNewNoteButton) {
+      count += 1;
+    }
+    return count;
+  }
+
+  private topBarActionGroupWidth(): number {
+    let width: number = 0;
+    if (this.enablePaperLinks) {
+      width += 26;
+    }
+    if (this.showTopBarExternalOpenButton && this.paper !== null && this.paper.type === PAPER_TYPE_NOTE) {
+      width += 38;
+    }
+    if (this.showTopBarNewTodoButton) {
+      width += 34;
+    }
+    if (this.showTopBarNewNoteButton) {
+      width += 34;
+    }
+    const count: number = this.topBarActionItemCount();
+    return width + Math.max(0, count - 1) * 2;
+  }
+
+  private showTopBarActionGroup(): boolean {
+    const actionWidth: number = this.topBarActionGroupWidth();
+    // Pin + title minimum + drag strip + dismiss + outer gaps/padding must all
+    // fit before the original action cluster is allowed to appear.
+    return actionWidth > 0 && this.layoutWidth >= 134 + actionWidth;
+  }
+
+  private showTopBarTitle(): boolean {
+    return this.layoutWidth >= 150;
+  }
+
   @Builder
   private HeaderBar() {
-    Row({ space: 4 }) {
-      Text('⋮⋮')
-        .width(26)
+    Row({ space: 2 }) {
+      Button() {
+        Image(this.alwaysOnTop ? $r('app.media.pin_filled') : $r('app.media.pin_outline'))
+          .width(15)
+          .height(15)
+          .fillColor(this.alwaysOnTop ? this.accentColor() : this.mutedColor())
+      }
+        .width(28)
         .height(30)
-        .fontSize(16)
-        .fontColor(this.mutedColor())
-        .textAlign(TextAlign.Center)
-        .gesture(
-          PanGesture({ direction: PanDirection.All })
-            .onActionStart((): void => this.beginMove())
-            .onActionUpdate((event: GestureEvent): void => this.updateMove(event))
-            .onActionEnd((): void => this.endMove())
-            .onActionCancel((): void => this.cancelMove())
-        )
+        .backgroundColor(Color.Transparent)
+        .accessibilityText(this.text(this.alwaysOnTop ? 'action.unpin' : 'action.pin'))
+        .onClick((): void => this.toggleTopmost())
 
-      if (this.layoutWidth >= 210) {
-        Button(this.pinLabel())
-          .width(30)
-          .height(30)
-          .fontSize(13)
-          .fontColor(this.textColor())
-          .backgroundColor(Color.Transparent)
-          .onClick((): void => this.toggleTopmost())
+      if (this.showTopBarTitle()) {
+        if (this.titleEditing) {
+          TextInput({
+            text: this.title,
+            placeholder: this.text(this.paper !== null && this.paper.type === PAPER_TYPE_NOTE ?
+              'paper.note' : 'paper.todo'),
+            controller: this.titleController
+          })
+            .id('paper_title_input')
+            .constraintSize({ minWidth: 40, maxWidth: 92 })
+            .height(30)
+            .fontSize(this.titleFontSize())
+            .fontWeight(this.configuredFontWeight(this.titleTextBold))
+            .fontColor(this.textColor())
+            .placeholderColor(this.mutedColor())
+            .backgroundColor(Color.Transparent)
+            .padding(0)
+            .maxLength(TITLE_MAX_LENGTH)
+            .onChange((value: string): void => {
+              this.title = value;
+            })
+            .onSubmit((): void => this.finishTitleEdit())
+            .onBlur((): void => this.finishTitleEdit())
+            .onKeyPreIme((event: KeyEvent): boolean => this.handleTitleKey(event))
+            .onKeyEvent((event: KeyEvent): boolean => this.handleTitleKey(event))
+        } else {
+          Text(this.titleOrFallback())
+            .constraintSize({ minWidth: 40, maxWidth: 92 })
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .fontSize(this.titleFontSize())
+            .fontWeight(this.configuredFontWeight(this.titleTextBold))
+            .fontColor(this.textColor())
+            .padding({ left: 2, right: 2 })
+            .onClick((): void => this.beginTitleEdit())
+        }
       }
 
-      TextInput({
-        text: this.title,
-        placeholder: this.text(this.paper !== null && this.paper.type === PAPER_TYPE_NOTE ? 'paper.note' : 'paper.todo')
-      })
+      Blank()
         .layoutWeight(1)
         .height(30)
-        .fontSize(this.titleFontSize())
-        .fontWeight(this.configuredFontWeight(this.titleTextBold))
-        .fontColor(this.textColor())
-        .placeholderColor(this.mutedColor())
-        .backgroundColor(Color.Transparent)
-        .padding(0)
-        .onChange((value: string): void => {
-          this.title = truncateText(value, TITLE_MAX_LENGTH);
-          this.savePaper(false);
-        })
+        .onTouch((event: TouchEvent): void => this.startNativeWindowMove(event))
 
-      if (this.paper !== null && this.paper.type === PAPER_TYPE_NOTE && this.layoutWidth >= 320) {
-        Button(this.text(this.isNoteBrowsing ? 'button.editShort' : 'button.browseShort'))
-          .width(30)
-          .height(30)
-          .fontSize(12)
-          .fontColor(this.textColor())
-          .backgroundColor(Color.Transparent)
-          .onClick((): void => this.toggleNoteBrowse())
-      }
-      if (this.paper !== null && this.paper.type === PAPER_TYPE_NOTE && this.layoutWidth >= 380) {
-        Button(this.markdownModeLabel())
-          .width(38)
-          .height(30)
-          .fontSize(10)
-          .fontColor(this.textColor())
-          .backgroundColor(Color.Transparent)
-          .onClick((): void => this.cycleMarkdownMode())
-      }
-      if (this.layoutWidth >= 430) {
-        Button('◐')
-          .width(30)
-          .height(30)
-          .fontSize(12)
-          .fontColor(this.textColor())
-          .backgroundColor(Color.Transparent)
-          .onClick((): void => this.cycleTheme())
-      }
-      if (this.useCapsuleMode && this.layoutWidth >= 470) {
-        Button('▁')
-          .width(30)
-          .height(30)
-          .fontSize(12)
-          .fontColor(this.textColor())
-          .backgroundColor(Color.Transparent)
-          .onClick((): void => this.setCollapsed(true))
-      }
-      if (this.showTopBarNewTodoButton && this.layoutWidth >= 540) {
-        Button('☑+')
-          .width(34)
-          .height(30)
-          .fontSize(10)
-          .fontColor(this.textColor())
-          .backgroundColor(Color.Transparent)
-          .onClick((): void => this.createPaper(PAPER_TYPE_TODO))
-      }
-      if (this.showTopBarNewNoteButton && this.layoutWidth >= 580) {
-        Button('✎+')
-          .width(34)
-          .height(30)
-          .fontSize(10)
-          .fontColor(this.textColor())
-          .backgroundColor(Color.Transparent)
-          .onClick((): void => this.createPaper(PAPER_TYPE_NOTE))
-      }
-      if (this.showTopBarExternalOpenButton && this.paper !== null &&
-        this.paper.type === PAPER_TYPE_NOTE && this.layoutWidth >= 630) {
-        Button('MD↗')
-          .width(38)
-          .height(30)
-          .fontSize(9)
-          .fontColor(this.textColor())
-          .backgroundColor(Color.Transparent)
-          .onClick((): void => {
-            this.openMarkdownExternally();
-          })
-      }
-      if (this.layoutWidth < 580 ||
-        (this.paper !== null && this.paper.type === PAPER_TYPE_NOTE && this.layoutWidth < 630)) {
-        Button('⋯')
-          .width(30)
-          .height(30)
-          .fontSize(14)
-          .fontColor(this.textColor())
-          .backgroundColor(Color.Transparent)
-          .onClick((): void => {
-            this.showMoreActions = !this.showMoreActions;
-          })
-      }
+      if (this.showTopBarActionGroup()) {
+        Row({ space: 2 }) {
+          if (this.enablePaperLinks) {
+            Text(this.isPaperLinked() ? '⦿' : '⌖')
+              .width(26)
+              .height(30)
+              .fontSize(13)
+              .fontColor(this.textColor())
+              .textAlign(TextAlign.Center)
+              .accessibilityText(this.text('link.to'))
+              .draggable(true)
+              .onDragStart((event: DragEvent): DragItemInfo => this.beginPaperLinkDrag(event))
+          }
 
-      if (this.layoutWidth >= 240) {
-        Button('—')
-          .width(28)
-          .height(30)
-          .fontSize(12)
-          .fontColor(this.mutedColor())
-          .backgroundColor(Color.Transparent)
-          .onClick((): void => this.hidePaper())
-      }
+          if (this.showTopBarExternalOpenButton && this.paper !== null && this.paper.type === PAPER_TYPE_NOTE) {
+            Button('MD')
+              .width(38)
+              .height(30)
+              .fontSize(10)
+              .fontColor(this.textColor())
+              .backgroundColor(Color.Transparent)
+              .accessibilityText(this.text('action.openExternally'))
+              .onClick((): void => {
+                this.openMarkdownExternally();
+              })
+          }
 
-      Button(this.deleteConfirm ? this.text('action.confirm') : '×')
-        .width(this.deleteConfirm ? 42 : 28)
+          if (this.showTopBarNewTodoButton) {
+            Button('＋✓')
+              .width(34)
+              .height(30)
+              .fontSize(11)
+              .fontColor(this.textColor())
+              .backgroundColor(Color.Transparent)
+              .accessibilityText(this.text('action.newTodo'))
+              .onClick((): void => this.createPaper(PAPER_TYPE_TODO))
+          }
+
+          if (this.showTopBarNewNoteButton) {
+            Button('＋✎')
+              .width(34)
+              .height(30)
+              .fontSize(11)
+              .fontColor(this.textColor())
+              .backgroundColor(Color.Transparent)
+              .accessibilityText(this.text('action.newNote'))
+              .onClick((): void => this.createPaper(PAPER_TYPE_NOTE))
+          }
+        }
         .height(30)
-        .fontSize(this.deleteConfirm ? 10 : 14)
-        .fontColor(this.deleteConfirm ? '#B42318' : this.mutedColor())
+      }
+
+      Button(this.canCollapseToCapsule() ? '─' : '×')
+        .width(28)
+        .height(30)
+        .fontSize(13)
+        .fontColor(this.mutedColor())
         .backgroundColor(Color.Transparent)
-        .onClick((): void => this.deletePaper())
+        .accessibilityText(this.text(this.canCollapseToCapsule() ? 'action.collapse' : 'action.hide'))
+        .onClick((): void => {
+          const action: string = resolveTopBarDismissAction(this.canCollapseToCapsule());
+          if (action === PAPER_ACTION_COLLAPSE) {
+            this.setCollapsed(true);
+          } else if (action === PAPER_ACTION_HIDE) {
+            this.hidePaper();
+          }
+        })
     }
     .width('100%')
     .height(34)
@@ -2891,61 +3506,13 @@ struct Paper {
   }
 
   @Builder
-  private MoreActionsBar() {
-    Scroll() {
-      Row({ space: 4 }) {
-        if (this.paper !== null && this.paper.type === PAPER_TYPE_NOTE) {
-          Button(this.text(this.isNoteBrowsing ? 'action.edit' : 'action.browse'))
-            .height(28)
-            .fontSize(10)
-            .onClick((): void => this.toggleNoteBrowse())
-          Button(this.markdownModeLabel())
-            .height(28)
-            .fontSize(10)
-            .onClick((): void => this.cycleMarkdownMode())
-          Button(this.text('action.openExternally'))
-            .height(28)
-            .fontSize(10)
-            .onClick((): void => {
-              this.openMarkdownExternally();
-            })
-        }
-        Button(this.text('action.theme'))
-          .height(28)
-          .fontSize(10)
-          .onClick((): void => this.cycleTheme())
-        if (this.useCapsuleMode) {
-          Button(this.text('action.collapse'))
-            .height(28)
-            .fontSize(10)
-            .onClick((): void => this.setCollapsed(true))
-        }
-        if (this.showTopBarNewTodoButton) {
-          Button(this.text('action.newTodoShort'))
-            .height(28)
-            .fontSize(10)
-            .onClick((): void => this.createPaper(PAPER_TYPE_TODO))
-        }
-        if (this.showTopBarNewNoteButton) {
-          Button(this.text('action.newNoteShort'))
-            .height(28)
-            .fontSize(10)
-            .onClick((): void => this.createPaper(PAPER_TYPE_NOTE))
-        }
-      }
-      .padding({ left: 8, right: 8 })
-    }
-    .width('100%')
-    .height(34)
-    .scrollable(ScrollDirection.Horizontal)
-    .scrollBar(BarState.Off)
-  }
-
-  @Builder
   private TodoContextMenu(item: PaperItem) {
     Menu() {
       MenuItem({ content: this.text(item.done ? 'action.markUndone' : 'action.markDone') })
         .onClick((): void => this.toggleTodo(item.id))
+      MenuItem({ content: this.text('action.clearCompleted') })
+        .enabled(this.completedCount() > 0)
+        .onClick((): void => this.clearCompleted())
       MenuItem({
         content: this.text(this.hasTodoAssociation(item) ? 'action.openAssociation' : 'action.addAssociation')
       })
@@ -2973,38 +3540,6 @@ struct Paper {
   @Builder
   private TodoBody() {
     Column() {
-      Row() {
-        Text(this.completedCount().toString() + '/' + this.items.length.toString())
-          .fontSize(11)
-          .fontColor(this.mutedColor())
-        Button('↶')
-          .width(28)
-          .height(26)
-          .fontSize(13)
-          .enabled(this.canUndoTodo)
-          .opacity(this.canUndoTodo ? 1 : 0.35)
-          .backgroundColor(Color.Transparent)
-          .onClick((): void => this.undoTodo())
-        Button('↷')
-          .width(28)
-          .height(26)
-          .fontSize(13)
-          .enabled(this.canRedoTodo)
-          .opacity(this.canRedoTodo ? 1 : 0.35)
-          .backgroundColor(Color.Transparent)
-          .onClick((): void => this.redoTodo())
-        Blank()
-        Button(this.text('action.clearCompleted'))
-          .height(28)
-          .fontSize(10)
-          .fontColor(this.mutedColor())
-          .backgroundColor(Color.Transparent)
-          .onClick((): void => this.clearCompleted())
-      }
-      .width('100%')
-      .height(30)
-      .padding({ left: 10, right: 8 })
-
       List({ space: 2 }) {
         ForEach(this.items, (item: PaperItem) => {
           ListItem() {
@@ -3019,46 +3554,64 @@ struct Paper {
                 .borderRadius(7)
                 .onClick((): void => this.toggleTodo(item.id))
 
-              TextInput({
+              TextArea({
                 text: item.text,
                 placeholder: this.text('placeholder.todoItem'),
                 controller: this.todoController(item.id)
               })
                 .id(this.todoFocusKey(item.id))
                 .layoutWeight(1)
-                .height(this.todoRowHeight() - 6)
+                .minLines(1)
+                .textOverflow(TextOverflow.Clip)
+                .maxLines(6, { overflowMode: MaxLinesMode.SCROLL })
                 .fontSize(this.todoFontSize())
                 .fontWeight(this.configuredFontWeight(this.todoTextBold))
                 .fontColor(item.done ? this.mutedColor() : this.textColor())
+                .decoration({
+                  type: item.done ? TextDecorationType.LineThrough : TextDecorationType.None,
+                  color: this.mutedColor()
+                })
                 .placeholderColor(this.mutedColor())
                 .backgroundColor(Color.Transparent)
                 .padding(0)
+                .maxLength(TODO_ITEM_MAX_LENGTH)
+                .enterKeyType(EnterKeyType.Next)
                 .onChange((value: string): void => this.updateTodoText(item.id, value))
+                .onPaste((content: string, event: PasteEvent): void => this.pasteTodoLines(item.id, content, event))
                 .onSubmit((): void => this.insertTodoAfter(item.id))
                 .onKeyPreIme((event: KeyEvent): boolean => this.handleTodoKey(event, item))
                 .onKeyEvent((event: KeyEvent): boolean => this.handleTodoKey(event, item))
+                .onFocus((): void => {
+                  this.focusedTodoId = item.id;
+                })
+                .onBlur((): void => {
+                  if (this.focusedTodoId === item.id) {
+                    this.focusedTodoId = '';
+                  }
+                  this.todoHistory.breakCoalescing();
+                })
                 .parallelGesture(
                   TapGesture({ count: 2 })
                     .onAction((): void => this.todoController(item.id).setTextSelection(0, item.text.length))
                 )
 
-              Button(this.responsiveAssociationLabel(item))
-                .width(this.hasTodoAssociation(item) && this.layoutWidth >= 260 ? 72 : 28)
-                .height(26)
-                .fontSize(10)
-                .fontColor(this.hasTodoAssociation(item) ? this.accentColor() : this.mutedColor())
-                .backgroundColor(Color.Transparent)
-                .onClick((): void => this.openTodoAssociation(item))
-              if (this.hasTodoAssociation(item) && this.layoutWidth >= 240) {
-                Button('⌁')
-                  .width(24)
+              if (this.hasTodoAssociation(item)) {
+                Button(this.responsiveAssociationLabel(item))
+                  .width(this.layoutWidth >= 260 ? 72 : 28)
                   .height(26)
                   .fontSize(10)
-                  .fontColor(this.mutedColor())
-                  .backgroundColor(Color.Transparent)
-                  .onClick((): void => {
-                    this.linkingTodoId = item.id;
+                  .fontColor(this.quickLaunchHasFailed(item) || this.linkedPaperIsActive(item) ?
+                    this.paperColor() : this.accentColor())
+                  .backgroundColor(this.quickLaunchHasFailed(item) ? this.dangerColor() :
+                    (this.linkedPaperIsActive(item) ? this.accentColor() : Color.Transparent))
+                  .border({
+                    width: this.quickLaunchHasFailed(item) ? 1 : 0,
+                    color: this.quickLaunchHasFailed(item) ? this.dangerColor() : Color.Transparent
                   })
+                  .borderRadius(7)
+                  .accessibilityText(this.quickLaunchHasFailed(item) ?
+                    this.text('status.quickLaunchMissing') : this.responsiveAssociationLabel(item))
+                  .onClick((): void => this.openTodoAssociation(item))
               }
 
               Text('≡')
@@ -3071,22 +3624,17 @@ struct Paper {
                 .onDragStart((event: DragEvent): DragItemInfo => this.beginTodoItemDrag(event, item))
                 .onDragEnd((): void => this.finishTodoItemDrag())
 
-              Button('×')
-                .width(24)
-                .height(28)
-                .fontSize(12)
-                .fontColor(this.mutedColor())
-                .backgroundColor(Color.Transparent)
-                .onClick((): void => this.deleteTodo(item.id))
             }
             .width('100%')
-            .height(this.todoRowHeight())
+            .constraintSize({ minHeight: this.todoRowHeight() })
+            .alignItems(VerticalAlign.Center)
             .padding({ left: 8, right: 4 })
             .transition(TransitionEffect.OPACITY
               .combine(TransitionEffect.scale({ x: 0.97, y: 0.97 }))
               .animation({ duration: this.enableAnimations ? 160 : 0, curve: Curve.EaseOut }))
             .animation({ duration: this.enableAnimations ? 160 : 0, curve: Curve.EaseOut })
-            .backgroundColor(this.todoDropTargetId === item.id ? this.inputColor() : Color.Transparent)
+            .backgroundColor(this.todoDropTargetId === item.id || this.contextMenuTodoId === item.id ||
+              this.keyboardMenuTodoId === item.id ? this.inputColor() : Color.Transparent)
             .allowDrop([
               TODO_ITEM_UDMF_TYPE,
               PAPER_LINK_UDMF_TYPE,
@@ -3114,6 +3662,11 @@ struct Paper {
               }
             })
             .onDrop((event: DragEvent): void => this.handleTodoAssociationDrop(event, item.id))
+            .onMouse((event: MouseEvent): void => {
+              if (event.button === MouseButton.Right && event.action === MouseAction.Press) {
+                this.focusTodoForContextMenu(item.id);
+              }
+            })
             .bindMenu(this.keyboardMenuTodoId === item.id, () => {
               this.TodoContextMenu(item)
             }, {
@@ -3121,11 +3674,15 @@ struct Paper {
                 if (this.keyboardMenuTodoId === item.id) {
                   this.keyboardMenuTodoId = '';
                 }
+                this.finishTodoContextMenu(item.id);
               }
             })
             .bindContextMenu(() => {
               this.TodoContextMenu(item)
-            }, ResponseType.RightClick)
+            }, ResponseType.RightClick, {
+              aboutToAppear: (): void => this.focusTodoForContextMenu(item.id),
+              onDisappear: (): void => this.finishTodoContextMenu(item.id)
+            })
           }
         }, (item: PaperItem): string => item.id)
       }
@@ -3177,93 +3734,57 @@ struct Paper {
         .scrollBar(BarState.Off)
       }
 
-      Row({ space: 6 }) {
-        TextInput({ text: this.draft, placeholder: this.text('placeholder.addTodo') })
-          .layoutWeight(1)
-          .height(38)
-          .fontSize(13)
-          .fontColor(this.textColor())
-          .placeholderColor(this.mutedColor())
-          .backgroundColor(this.inputColor())
-          .border({ width: 1, color: this.paperBorderColor() })
-          .borderRadius(8)
-          .onChange((value: string): void => {
-            this.draft = value;
-          })
-          .onSubmit((): void => this.addDraftTodos())
-        Button('+')
-          .width(38)
-          .height(38)
-          .fontSize(20)
-          .fontColor(this.paperColor())
-          .backgroundColor(this.textColor())
-          .borderRadius(8)
-          .onClick((): void => this.addDraftTodos())
-      }
+      Button('＋')
       .width('100%')
-      .padding({ left: 8, right: 8, bottom: 8 })
+      .height(32)
+      .fontSize(20)
+      .fontColor(this.mutedColor())
+      .backgroundColor(Color.Transparent)
+      .onClick((): void => this.appendBlankTodo())
     }
     .layoutWeight(1)
     .width('100%')
   }
 
   @Builder
-  private MarkdownToolbar() {
-    Scroll() {
-      Row({ space: 4 }) {
-        Button('B').onClick((): void => this.formatNoteBold())
-        Button('I').onClick((): void => this.formatNoteItalic())
-        Button('S').onClick((): void => this.formatNoteWrap('~~', '~~'))
-        Button('H').onClick((): void => this.formatNoteLinePrefix('## '))
-        Button('>').onClick((): void => this.formatNoteLinePrefix('> '))
-        Button('•').onClick((): void => this.formatNoteLinePrefix('- '))
-        Button('{}').onClick((): void => this.formatNoteCode())
-        Button('↗').onClick((): void => this.formatNoteLink())
-        Button(this.imageImporting ? '…' : '▧')
-          .enabled(!this.imageImporting)
-          .onClick((): void => this.chooseNoteImage())
-        PasteButton({ icon: PasteIconStyle.LINES, buttonType: ButtonType.Normal })
-          .width(30)
-          .height(28)
-          .iconSize(14)
-          .onClick((_event: ClickEvent, result: PasteButtonOnClickResult): void => {
-            const generation: number = this.beginPasteNoteImage(result);
-            if (generation < 0) {
-              return;
-            }
-            // Keep the permission-sensitive read in the security component callback. PasteButton grants only a
-            // short-lived read authorization, so declaring the restricted READ_PASTEBOARD permission is unnecessary.
-            pasteboard.getSystemPasteboard().getData((error: BusinessError,
-              data: pasteboard.PasteData): void => this.consumePastedNoteImage(generation, error, data));
-          })
-        Button('−')
-          .width(28)
-          .onClick((): void => this.changeTextZoom(-0.1))
-        Button(Math.round(this.textZoom * 100).toString() + '%')
-          .fontSize(9)
-          .onClick((): void => this.resetTextZoom())
-        Button('+')
-          .width(28)
-          .onClick((): void => this.changeTextZoom(0.1))
-      }
+  private NoteEditContextMenu() {
+    Menu() {
+      MenuItem({ content: this.noteEditorActionLabel('copy') })
+        .onClick((): void => this.copyNoteSelection())
+      MenuItem({ content: this.noteEditorActionLabel('selectAll') })
+        .onClick((): void => this.selectAllNote())
+      MenuItem({ content: this.text('glyph.bold') + '  ' + this.text('markdown.sampleBold') })
+        .onClick((): void => this.formatNoteBold())
+      MenuItem({ content: this.text('glyph.italic') + '  ' + this.text('markdown.sampleItalic') })
+        .onClick((): void => this.formatNoteItalic())
+      MenuItem({ content: this.text('glyph.strike') + '  ' + this.text('markdown.sampleStrike') })
+        .onClick((): void => this.formatNoteWrap('~~', '~~'))
+      MenuItem({ content: this.text('glyph.heading') + '  ' + this.text('markdown.sampleHeading') })
+        .onClick((): void => this.formatNoteLinePrefix('## '))
+      MenuItem({ content: this.text('glyph.quote') + '  ' + this.text('markdown.sampleQuote') })
+        .onClick((): void => this.formatNoteLinePrefix('> '))
+      MenuItem({ content: this.text('glyph.bullet') + '  ' + this.text('markdown.sampleList') })
+        .onClick((): void => this.formatNoteLinePrefix('- '))
+      MenuItem({ content: this.text('glyph.code') + '  ' + this.text('markdown.sampleInlineCode') })
+        .onClick((): void => this.formatNoteCode())
+      MenuItem({ content: this.text('glyph.link') + '  ' + this.text('markdown.sampleLink') })
+        .onClick((): void => this.formatNoteLink())
+      MenuItem({ content: this.text('glyph.image') + '  ' + this.text('image.alt') })
+        .enabled(!this.imageImporting)
+        .onClick((): void => this.chooseNoteImage())
     }
-    .width('100%')
-    .height(34)
-    .padding({ left: 8, right: 8 })
-    .scrollable(ScrollDirection.Horizontal)
-    .scrollBar(BarState.Off)
   }
 
   @Builder
   private NoteBody() {
     Column() {
       if (!this.isNoteBrowsing) {
-        this.MarkdownToolbar()
         TextArea({
           text: this.content,
           placeholder: this.text('placeholder.noteContent'),
           controller: this.noteController
         })
+          .id('paper_note_editor')
           .layoutWeight(1)
           .width('100%')
           .fontSize(this.noteFontSize())
@@ -3275,8 +3796,41 @@ struct Paper {
           .defaultFocus(true)
           .onWillInsert((value: InsertValue): boolean => this.continueMarkdownList(value))
           .onChange((value: string): void => this.updateNote(value))
+          .onBlur((): void => this.handleNoteEditorBlur())
           .onKeyPreIme((event: KeyEvent): boolean => this.handleNoteKey(event))
           .onKeyEvent((event: KeyEvent): boolean => this.handleNoteKey(event))
+          .bindContextMenu(() => {
+            this.NoteEditContextMenu()
+          }, ResponseType.RightClick, {
+            aboutToAppear: (): void => this.beginNoteInteraction(),
+            onDisappear: (): void => this.resumeNoteEditing()
+          })
+
+        Row() {
+          Blank()
+          PasteButton({
+            icon: PasteIconStyle.LINES,
+            text: PasteDescription.PASTE,
+            buttonType: ButtonType.Capsule
+          })
+            .width(82)
+            .height(30)
+            .fontSize(11)
+            .iconSize(14)
+            .fontColor(this.textColor())
+            .iconColor(this.textColor())
+            .backgroundColor(this.inputColor())
+            .borderRadius(15)
+            .onClick((_event: ClickEvent, result: PasteButtonOnClickResult): void => {
+              this.pasteNoteImageFromClipboard(result);
+              if (!this.imageImporting) {
+                this.resumeNoteEditing();
+              }
+            })
+        }
+        .width('100%')
+        .height(34)
+        .padding({ left: 8, right: 8, bottom: 4 })
       } else if (this.markdownRenderMode === MARKDOWN_OFF) {
         Scroll() {
           Text(this.content.length > 0 ? this.content : this.text('empty.noteStart'))
@@ -3303,7 +3857,7 @@ struct Paper {
                     .width(this.markdownImageWidth(line))
                     .height(this.markdownImageHeight(line))
                     .sourceSize({
-                      width: Math.max(48, this.layoutWidth - 24),
+                      width: Math.ceil(this.markdownImageWidth(line)),
                       height: Math.ceil(this.markdownImageHeight(line))
                     })
                     .orientation(ImageRotateOrientation.AUTO)
@@ -3340,6 +3894,17 @@ struct Paper {
         .layoutWeight(1)
         .width('100%')
         .onClick((): void => this.enterNoteEditFromPreview())
+      }
+
+      if (Math.abs(this.textZoom - 1) > 0.001) {
+        Button(Math.round(this.textZoom * 100).toString() + '%')
+          .height(24)
+          .fontSize(9)
+          .fontColor(this.mutedColor())
+          .backgroundColor(Color.Transparent)
+          .alignSelf(ItemAlign.End)
+          .margin({ right: 8, bottom: 4 })
+          .onClick((): void => this.resetTextZoom())
       }
     }
     .layoutWeight(1)
@@ -3476,25 +4041,32 @@ struct Paper {
   @Builder
   private PaperContextMenu() {
     Menu() {
-      if (this.paper !== null && this.paper.type === PAPER_TYPE_NOTE && !this.isCollapsed) {
-        MenuItem({ content: this.text(this.isNoteBrowsing ? 'action.edit' : 'action.browse') })
-          .onClick((): void => this.toggleNoteBrowse())
+      MenuItem({ content: this.text('action.newTodo') })
+        .onClick((): void => this.createPaper(PAPER_TYPE_TODO))
+      MenuItem({ content: this.text('action.newNote') })
+        .onClick((): void => this.createPaper(PAPER_TYPE_NOTE))
+      MenuItem({ content: this.text('action.settings') })
+        .onClick((): void => {
+          DesktopShell.openSettings(this.hostContext());
+        })
+      if (this.paper !== null && this.paper.type === PAPER_TYPE_TODO) {
+        MenuItem({ content: this.text('action.clearCompleted') })
+          .enabled(this.completedCount() > 0)
+          .onClick((): void => this.clearCompleted())
+      }
+      if (this.paper !== null && this.paper.type === PAPER_TYPE_NOTE) {
         MenuItem({ content: this.text('action.openExternally') })
           .onClick((): void => {
             this.openMarkdownExternally();
           })
       }
-      MenuItem({ content: this.text(this.alwaysOnTop ? 'action.unpin' : 'action.pin') })
-        .onClick((): void => this.toggleTopmost())
-      MenuItem({ content: this.text('action.theme') })
-        .onClick((): void => this.cycleTheme())
-      if (this.useCapsuleMode) {
+      if (this.canCollapseToCapsule() || this.isCollapsed) {
         MenuItem({ content: this.text(this.isCollapsed ? 'action.expand' : 'action.collapse') })
           .onClick((): void => this.setCollapsed(!this.isCollapsed))
       }
       MenuItem({ content: this.text('action.hide') })
         .onClick((): void => this.hidePaper())
-      MenuItem({ content: this.text(this.deleteConfirm ? 'action.confirmDelete' : 'action.deletePaper') })
+      MenuItem({ content: this.text('action.deletePaper') })
         .contentFontColor('#B42318')
         .onClick((): void => this.deletePaper())
     }
@@ -3583,9 +4155,6 @@ struct Paper {
       Stack({ alignContent: Alignment.Center }) {
         Column() {
           this.HeaderBar()
-          if (this.showMoreActions) {
-            this.MoreActionsBar()
-          }
           Divider().color(this.paperBorderColor()).opacity(0.45)
           if (this.statusMessage.length > 0) {
             Text(this.statusMessage)

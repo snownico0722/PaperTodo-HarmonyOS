@@ -4,6 +4,7 @@ import { display } from '@kit.ArkUI';
 import { i18n } from '@kit.LocalizationKit';
 import {
   AppState,
+  CAPSULE_EDGE_START_TOP,
   CAPSULE_MAX_WIDTH,
   CAPSULE_MIN_WIDTH,
   CAPSULE_WIDTH,
@@ -59,6 +60,14 @@ import {
 } from './Models';
 import { truncateText } from './TextSafety';
 import { NoteImageStore } from './NoteImageStore';
+import {
+  cleanCommittedPaperTitle,
+  cleanPaperTitle,
+  defaultPaperTitle,
+  DEFAULT_PAPER_TITLE_LIMIT,
+  nextPaperTitleNumber,
+  normalizePaperTitleLimit
+} from './PaperTitles';
 
 const STORE_NAME: string = 'PaperTodoState';
 const STATE_KEY: string = 'state_json';
@@ -86,6 +95,8 @@ class PaperStoreImpl {
   private retryTimer: number = -1;
   private revision: number = 0;
   private imageFilesReconciled: boolean = false;
+  private capsuleEligibilitySignature: string = '';
+  private capsuleEligibilitySignatureInitialized: boolean = false;
 
   initialize(context: Context): void {
     if (this.store === null) {
@@ -218,6 +229,7 @@ class PaperStoreImpl {
     const isNote: boolean = type === PAPER_TYPE_NOTE;
     const now: number = Date.now();
     const source: PaperData | null = sourcePaperId.length > 0 ? this.getPaper(sourcePaperId) : null;
+    const systemLanguage: string = this.currentSystemLanguage();
     const offset: number = (state.papers.length % 8) * 28;
     const startX: number = source !== null ? source.expandedX + 32 : 120 + offset;
     const startY: number = source !== null ? source.expandedY + 32 : 120 + offset;
@@ -225,7 +237,9 @@ class PaperStoreImpl {
     const paper: PaperData = {
       id: this.nextId('paper'),
       type: isNote ? PAPER_TYPE_NOTE : PAPER_TYPE_TODO,
-      title: '',
+      title: defaultPaperTitle(isNote ? PAPER_TYPE_NOTE : PAPER_TYPE_TODO,
+        nextPaperTitleNumber(state.papers, isNote ? PAPER_TYPE_NOTE : PAPER_TYPE_TODO,
+          state.uiLanguage, systemLanguage), state.uiLanguage, systemLanguage),
       expandedX: startX,
       expandedY: startY,
       expandedWidth: isNote ? NOTE_DEFAULT_WIDTH : TODO_DEFAULT_WIDTH,
@@ -237,7 +251,7 @@ class PaperStoreImpl {
       edgeOrder: edgeOrder,
       edgeDisplayId: DEFAULT_DISPLAY_ID,
       isVisible: true,
-      alwaysOnTop: false,
+      alwaysOnTop: source !== null ? source.alwaysOnTop : false,
       isCollapsed: false,
       textZoom: 1,
       items: isNote ? [] : [this.createItem('', 0)],
@@ -257,25 +271,58 @@ class PaperStoreImpl {
     this.normalizePaper(paper, paper.edgeOrder);
     this.sanitizePaperLinks(paper);
     paper.updatedAt = Date.now();
-    const papers: PaperData[] = this.ensureState().papers;
+    const state: AppState = this.ensureState();
+    const papers: PaperData[] = state.papers;
     for (let i: number = 0; i < papers.length; i++) {
       if (papers[i].id === paper.id) {
         papers[i] = paper;
+        const eligibilityChanged: boolean = this.refreshCapsuleEligibilitySignature(state);
+        const expandedIneligiblePaper: boolean = this.expandIneligibleCapsulePapers(state);
+        if (this.countEdgeCapsulePapers(state) === 0) {
+          state.capsuleCollapseAllActive = false;
+        }
         this.requestSave(immediate);
+        if (eligibilityChanged || expandedIneligiblePaper) {
+          this.notifyRevision();
+        }
         return;
       }
     }
     if (papers.length < MAX_PAPERS) {
       papers.push(paper);
+      const eligibilityChanged: boolean = this.refreshCapsuleEligibilitySignature(state);
+      const expandedIneligiblePaper: boolean = this.expandIneligibleCapsulePapers(state);
       this.requestSave(immediate);
+      if (eligibilityChanged || expandedIneligiblePaper) {
+        this.notifyRevision();
+      }
     }
   }
 
-  deletePaper(id: string): void {
+  commitPaperTitle(id: string, title: string, immediate: boolean = true): string | null {
     if (this.storageBlocked) {
-      return;
+      return null;
     }
     const state: AppState = this.ensureState();
+    const paper: PaperData | null = this.getPaper(id);
+    if (paper === null) {
+      return null;
+    }
+    const cleaned: string = cleanCommittedPaperTitle(title, state.titleCharacterLimit);
+    if (paper.title !== cleaned) {
+      paper.title = cleaned;
+      this.updatePaper(paper, immediate);
+      this.notifyRevision();
+    }
+    return cleaned;
+  }
+
+  deletePaper(id: string): PaperData | null {
+    if (this.storageBlocked) {
+      return null;
+    }
+    const state: AppState = this.ensureState();
+    let removed: boolean = false;
     const next: PaperData[] = [];
     for (let i: number = 0; i < state.papers.length; i++) {
       if (state.papers[i].id !== id) {
@@ -286,7 +333,12 @@ class PaperStoreImpl {
           }
         }
         next.push(state.papers[i]);
+      } else {
+        removed = true;
       }
+    }
+    if (!removed) {
+      return null;
     }
     state.papers = next;
     const remainingImages: NoteImageAsset[] = [];
@@ -296,9 +348,45 @@ class PaperStoreImpl {
       }
     }
     state.noteImages = remainingImages;
+    let replacement: PaperData | null = null;
+    if (state.papers.length === 0) {
+      const now: number = Date.now();
+      const systemLanguage: string = this.currentSystemLanguage();
+      replacement = {
+        id: this.nextId('paper'),
+        type: PAPER_TYPE_TODO,
+        title: defaultPaperTitle(PAPER_TYPE_TODO,
+          nextPaperTitleNumber(state.papers, PAPER_TYPE_TODO, state.uiLanguage, systemLanguage),
+          state.uiLanguage, systemLanguage),
+        expandedX: 120,
+        expandedY: 120,
+        expandedWidth: TODO_DEFAULT_WIDTH,
+        expandedHeight: TODO_DEFAULT_HEIGHT,
+        capsuleX: 120,
+        capsuleY: 120,
+        capsuleWidth: CAPSULE_WIDTH,
+        edgeSide: EDGE_SIDE_RIGHT,
+        edgeOrder: 0,
+        edgeDisplayId: DEFAULT_DISPLAY_ID,
+        isVisible: true,
+        alwaysOnTop: false,
+        isCollapsed: false,
+        textZoom: 1,
+        items: [this.createItem('', 0)],
+        content: '',
+        createdAt: now,
+        updatedAt: now
+      };
+      state.papers.push(replacement);
+    }
+    if (this.countEdgeCapsulePapers(state) === 0) {
+      state.capsuleCollapseAllActive = false;
+    }
+    this.refreshCapsuleEligibilitySignature(state);
     this.resequenceEdges();
     this.requestSave(true);
     this.notifyRevision();
+    return replacement;
   }
 
   setPaperVisible(id: string, visible: boolean): void {
@@ -308,6 +396,10 @@ class PaperStoreImpl {
     }
     paper.isVisible = visible;
     this.updatePaper(paper, true);
+    const state: AppState = this.ensureState();
+    if (this.countEdgeCapsulePapers(state) === 0) {
+      state.capsuleCollapseAllActive = false;
+    }
     this.notifyRevision();
   }
 
@@ -317,8 +409,11 @@ class PaperStoreImpl {
     if (paper === null) {
       return;
     }
-    paper.isCollapsed = collapsed && state.useCapsuleMode;
+    paper.isCollapsed = collapsed && this.canPaperDisplayAsCapsuleInState(state, paper);
     this.updatePaper(paper, true);
+    if (this.countEdgeCapsulePapers(state) === 0) {
+      state.capsuleCollapseAllActive = false;
+    }
     this.notifyRevision();
   }
 
@@ -387,6 +482,9 @@ class PaperStoreImpl {
     const state: AppState = this.ensureState();
     state.useCapsuleMode = enabled;
     if (!enabled) {
+      state.useDeepCapsuleMode = false;
+      state.capsuleCollapseAllActive = false;
+      state.capsuleStartTop = CAPSULE_EDGE_START_TOP;
       for (let i: number = 0; i < state.papers.length; i++) {
         state.papers[i].isCollapsed = false;
       }
@@ -398,6 +496,58 @@ class PaperStoreImpl {
   setDeepCapsuleMode(enabled: boolean): void {
     const state: AppState = this.ensureState();
     state.useDeepCapsuleMode = enabled;
+    if (enabled) {
+      state.useCapsuleMode = true;
+    } else {
+      state.capsuleCollapseAllActive = false;
+      state.capsuleStartTop = CAPSULE_EDGE_START_TOP;
+    }
+    this.requestSave(true);
+    this.publishSettings();
+  }
+
+  setShowDeepCapsuleWhileExpanded(enabled: boolean): void {
+    const state: AppState = this.ensureState();
+    state.showDeepCapsuleWhileExpanded = enabled;
+    if (this.countEdgeCapsulePapers(state) === 0) {
+      state.capsuleCollapseAllActive = false;
+    }
+    this.requestSave(true);
+    this.publishSettings();
+  }
+
+  setMasterCapsuleEnabled(enabled: boolean): void {
+    const state: AppState = this.ensureState();
+    state.useMasterCapsule = enabled;
+    if (!enabled) {
+      state.capsuleCollapseAllActive = false;
+      state.capsuleStartTop = CAPSULE_EDGE_START_TOP;
+    }
+    this.requestSave(true);
+    this.publishSettings();
+  }
+
+  setCapsuleCollapseAllActive(active: boolean): void {
+    const state: AppState = this.ensureState();
+    state.capsuleCollapseAllActive = active && state.useCapsuleMode && state.useDeepCapsuleMode &&
+      state.useMasterCapsule && this.listEdgeCapsulePapers().length > 0;
+    this.requestSave(true);
+    this.publishSettings();
+  }
+
+  setCapsuleStartTop(top: number): void {
+    const state: AppState = this.ensureState();
+    state.capsuleStartTop = Number.isFinite(top) ? Math.max(8, top) : CAPSULE_EDGE_START_TOP;
+    this.requestSave(false);
+    this.publishSettings();
+  }
+
+  setTitleCharacterLimit(limit: number): void {
+    const state: AppState = this.ensureState();
+    state.titleCharacterLimit = normalizePaperTitleLimit(limit);
+    for (let i: number = 0; i < state.papers.length; i++) {
+      state.papers[i].title = cleanCommittedPaperTitle(state.papers[i].title, state.titleCharacterLimit);
+    }
     this.requestSave(true);
     this.publishSettings();
   }
@@ -486,6 +636,25 @@ class PaperStoreImpl {
   setPaperLinksEnabled(enabled: boolean): void {
     const state: AppState = this.ensureState();
     state.enablePaperLinks = enabled;
+    if (enabled) {
+      this.expandIneligibleCapsulePapers(state);
+    }
+    if (this.countEdgeCapsulePapers(state) === 0) {
+      state.capsuleCollapseAllActive = false;
+    }
+    this.requestSave(true);
+    this.publishSettings();
+  }
+
+  setHideLinkedPapersFromCapsules(enabled: boolean): void {
+    const state: AppState = this.ensureState();
+    state.hideLinkedPapersFromCapsules = enabled;
+    if (enabled) {
+      this.expandIneligibleCapsulePapers(state);
+    }
+    if (this.countEdgeCapsulePapers(state) === 0) {
+      state.capsuleCollapseAllActive = false;
+    }
     this.requestSave(true);
     this.publishSettings();
   }
@@ -549,6 +718,31 @@ class PaperStoreImpl {
     state.showTopBarExternalOpenButton = enabled;
     this.requestSave(true);
     this.publishSettings();
+  }
+
+  isPaperLinkedToAnyTodo(paperId: string): boolean {
+    return this.isPaperLinkedToAnyTodoInState(this.ensureState(), paperId);
+  }
+
+  canPaperDisplayAsCapsule(paper: PaperData): boolean {
+    return this.canPaperDisplayAsCapsuleInState(this.ensureState(), paper);
+  }
+
+  listEdgeCapsulePapers(): PaperData[] {
+    const state: AppState = this.ensureState();
+    const queue: PaperData[] = [];
+    if (!state.useCapsuleMode || !state.useDeepCapsuleMode) {
+      return queue;
+    }
+    for (let i: number = 0; i < state.papers.length; i++) {
+      const paper: PaperData = state.papers[i];
+      if (this.canPaperDisplayAsCapsuleInState(state, paper) && paper.isVisible &&
+        (paper.isCollapsed || state.showDeepCapsuleWhileExpanded)) {
+        queue.push(paper);
+      }
+    }
+    queue.sort((a: PaperData, b: PaperData): number => a.edgeOrder - b.edgeOrder);
+    return queue;
   }
 
   getCollapsedIndex(id: string): number {
@@ -862,6 +1056,19 @@ class PaperStoreImpl {
     if (typeof state.useDeepCapsuleMode !== 'boolean') {
       state.useDeepCapsuleMode = true;
     }
+    if (typeof state.showDeepCapsuleWhileExpanded !== 'boolean') {
+      state.showDeepCapsuleWhileExpanded = true;
+    }
+    if (typeof state.useMasterCapsule !== 'boolean') {
+      state.useMasterCapsule = true;
+    }
+    if (typeof state.capsuleCollapseAllActive !== 'boolean') {
+      state.capsuleCollapseAllActive = false;
+    }
+    if (!Number.isFinite(state.capsuleStartTop)) {
+      state.capsuleStartTop = CAPSULE_EDGE_START_TOP;
+    }
+    state.capsuleStartTop = Math.max(8, state.capsuleStartTop);
     if (typeof state.enableAnimations !== 'boolean') {
       state.enableAnimations = true;
     }
@@ -878,8 +1085,12 @@ class PaperStoreImpl {
       state.edgeCapsuleTitleCharacterLimit !== 16) {
       state.edgeCapsuleTitleCharacterLimit = 0;
     }
+    state.titleCharacterLimit = normalizePaperTitleLimit(state.titleCharacterLimit);
     if (typeof state.enablePaperLinks !== 'boolean') {
       state.enablePaperLinks = true;
+    }
+    if (typeof state.hideLinkedPapersFromCapsules !== 'boolean') {
+      state.hideLinkedPapersFromCapsules = false;
     }
     state.overallFontScale = this.normalizeOverallFontScale(state.overallFontScale);
     state.noteTextSize = this.normalizeVisualTextSize(state.noteTextSize);
@@ -917,9 +1128,18 @@ class PaperStoreImpl {
       this.normalizePaper(state.papers[i], i);
     }
     if (!state.useCapsuleMode) {
+      state.useDeepCapsuleMode = false;
+      state.capsuleCollapseAllActive = false;
+      state.capsuleStartTop = CAPSULE_EDGE_START_TOP;
       for (let i: number = 0; i < state.papers.length; i++) {
         state.papers[i].isCollapsed = false;
       }
+    }
+    if (!state.useDeepCapsuleMode || !state.useMasterCapsule || this.countEdgeCapsulePapers(state) === 0) {
+      state.capsuleCollapseAllActive = false;
+    }
+    if (!state.useDeepCapsuleMode || !state.useMasterCapsule) {
+      state.capsuleStartTop = CAPSULE_EDGE_START_TOP;
     }
     if (sourceVersion < 3) {
       this.migrateLegacyPixelGeometry(state.papers);
@@ -933,6 +1153,10 @@ class PaperStoreImpl {
           paper.items[itemIndex].linkedPaperId = undefined;
         }
       }
+    }
+    this.expandIneligibleCapsulePapers(state);
+    if (this.countEdgeCapsulePapers(state) === 0) {
+      state.capsuleCollapseAllActive = false;
     }
     const normalizedImages: NoteImageAsset[] = [];
     let normalizedImageBytes: number = 0;
@@ -966,7 +1190,7 @@ class PaperStoreImpl {
     if (typeof paper.title !== 'string') {
       paper.title = '';
     }
-    paper.title = truncateText(paper.title, TITLE_MAX_LENGTH);
+    paper.title = cleanPaperTitle(paper.title, TITLE_MAX_LENGTH);
 
     const legacyX: number = paper.x !== undefined ? paper.x : 120;
     const legacyY: number = paper.y !== undefined ? paper.y : 120;
@@ -1169,12 +1393,27 @@ class PaperStoreImpl {
     return maxOrder + 1;
   }
 
+  private countEdgeCapsulePapers(state: AppState): number {
+    if (!state.useCapsuleMode || !state.useDeepCapsuleMode) {
+      return 0;
+    }
+    let count: number = 0;
+    for (let i: number = 0; i < state.papers.length; i++) {
+      if (this.canPaperDisplayAsCapsuleInState(state, state.papers[i]) && state.papers[i].isVisible &&
+        (state.papers[i].isCollapsed || state.showDeepCapsuleWhileExpanded)) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
   private createDefaultState(): AppState {
     const now: number = Date.now();
+    const systemLanguage: string = this.currentSystemLanguage();
     const firstPaper: PaperData = {
       id: this.nextId('paper'),
       type: PAPER_TYPE_TODO,
-      title: '',
+      title: defaultPaperTitle(PAPER_TYPE_TODO, 1, UI_LANGUAGE_SYSTEM, systemLanguage),
       expandedX: 120,
       expandedY: 120,
       expandedWidth: TODO_DEFAULT_WIDTH,
@@ -1207,6 +1446,10 @@ class PaperStoreImpl {
       markdownRenderMode: MARKDOWN_ENHANCED,
       useCapsuleMode: true,
       useDeepCapsuleMode: true,
+      showDeepCapsuleWhileExpanded: true,
+      useMasterCapsule: true,
+      capsuleCollapseAllActive: false,
+      capsuleStartTop: CAPSULE_EDGE_START_TOP,
       todoVisualSize: TODO_VISUAL_MEDIUM,
       autoClearCompletedTodos: false,
       autoBottomCompleted: false,
@@ -1216,7 +1459,9 @@ class PaperStoreImpl {
       collapseExpandedEdgeCapsuleOnClick: false,
       hideEdgeCapsuleCloseButtonOnHover: false,
       edgeCapsuleTitleCharacterLimit: 0,
+      titleCharacterLimit: DEFAULT_PAPER_TITLE_LIMIT,
       enablePaperLinks: true,
+      hideLinkedPapersFromCapsules: false,
       overallFontScale: 1,
       noteTextSize: VISUAL_TEXT_MEDIUM,
       noteTextBold: false,
@@ -1246,6 +1491,10 @@ class PaperStoreImpl {
       markdownRenderMode: MARKDOWN_ENHANCED,
       useCapsuleMode: true,
       useDeepCapsuleMode: true,
+      showDeepCapsuleWhileExpanded: true,
+      useMasterCapsule: true,
+      capsuleCollapseAllActive: false,
+      capsuleStartTop: CAPSULE_EDGE_START_TOP,
       todoVisualSize: TODO_VISUAL_MEDIUM,
       autoClearCompletedTodos: false,
       autoBottomCompleted: false,
@@ -1255,7 +1504,9 @@ class PaperStoreImpl {
       collapseExpandedEdgeCapsuleOnClick: false,
       hideEdgeCapsuleCloseButtonOnHover: false,
       edgeCapsuleTitleCharacterLimit: 0,
+      titleCharacterLimit: DEFAULT_PAPER_TITLE_LIMIT,
       enablePaperLinks: true,
+      hideLinkedPapersFromCapsules: false,
       overallFontScale: 1,
       noteTextSize: VISUAL_TEXT_MEDIUM,
       noteTextBold: false,
@@ -1287,6 +1538,10 @@ class PaperStoreImpl {
     AppStorage.setOrCreate<string>('markdownRenderMode', state.markdownRenderMode);
     AppStorage.setOrCreate<boolean>('useCapsuleMode', state.useCapsuleMode);
     AppStorage.setOrCreate<boolean>('useDeepCapsuleMode', state.useDeepCapsuleMode);
+    AppStorage.setOrCreate<boolean>('showDeepCapsuleWhileExpanded', state.showDeepCapsuleWhileExpanded);
+    AppStorage.setOrCreate<boolean>('useMasterCapsule', state.useMasterCapsule);
+    AppStorage.setOrCreate<boolean>('capsuleCollapseAllActive', state.capsuleCollapseAllActive);
+    AppStorage.setOrCreate<number>('capsuleStartTop', state.capsuleStartTop);
     AppStorage.setOrCreate<string>('todoVisualSize', state.todoVisualSize);
     AppStorage.setOrCreate<boolean>('autoClearCompletedTodos', state.autoClearCompletedTodos);
     AppStorage.setOrCreate<boolean>('autoBottomCompleted', state.autoBottomCompleted);
@@ -1298,7 +1553,9 @@ class PaperStoreImpl {
     AppStorage.setOrCreate<boolean>('collapseExpandedEdgeCapsuleOnClick', state.collapseExpandedEdgeCapsuleOnClick);
     AppStorage.setOrCreate<boolean>('hideEdgeCapsuleCloseButtonOnHover', state.hideEdgeCapsuleCloseButtonOnHover);
     AppStorage.setOrCreate<number>('edgeCapsuleTitleCharacterLimit', state.edgeCapsuleTitleCharacterLimit);
+    AppStorage.setOrCreate<number>('titleCharacterLimit', state.titleCharacterLimit);
     AppStorage.setOrCreate<boolean>('enablePaperLinks', state.enablePaperLinks);
+    AppStorage.setOrCreate<boolean>('hideLinkedPapersFromCapsules', state.hideLinkedPapersFromCapsules);
     AppStorage.setOrCreate<number>('overallFontScale', state.overallFontScale);
     AppStorage.setOrCreate<string>('noteTextSize', state.noteTextSize);
     AppStorage.setOrCreate<boolean>('noteTextBold', state.noteTextBold);
@@ -1311,7 +1568,80 @@ class PaperStoreImpl {
     AppStorage.setOrCreate<boolean>('showTopBarNewTodoButton', state.showTopBarNewTodoButton);
     AppStorage.setOrCreate<boolean>('showTopBarNewNoteButton', state.showTopBarNewNoteButton);
     AppStorage.setOrCreate<boolean>('showTopBarExternalOpenButton', state.showTopBarExternalOpenButton);
+    this.refreshCapsuleEligibilitySignature(state);
     this.notifyRevision();
+  }
+
+  private isPaperLinkedToAnyTodoInState(state: AppState, paperId: string): boolean {
+    if (paperId.length === 0) {
+      return false;
+    }
+    for (let paperIndex: number = 0; paperIndex < state.papers.length; paperIndex++) {
+      const source: PaperData = state.papers[paperIndex];
+      if (source.type !== PAPER_TYPE_TODO) {
+        continue;
+      }
+      for (let itemIndex: number = 0; itemIndex < source.items.length; itemIndex++) {
+        if (source.items[itemIndex].linkedPaperId === paperId) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  private canPaperDisplayAsCapsuleInState(state: AppState, paper: PaperData): boolean {
+    if (!state.useCapsuleMode) {
+      return false;
+    }
+    return !(state.enablePaperLinks && state.hideLinkedPapersFromCapsules &&
+      this.isPaperLinkedToAnyTodoInState(state, paper.id));
+  }
+
+  private expandIneligibleCapsulePapers(state: AppState): boolean {
+    if (!state.enablePaperLinks || !state.hideLinkedPapersFromCapsules) {
+      return false;
+    }
+    let changed: boolean = false;
+    for (let i: number = 0; i < state.papers.length; i++) {
+      if (state.papers[i].isCollapsed && !this.canPaperDisplayAsCapsuleInState(state, state.papers[i])) {
+        state.papers[i].isCollapsed = false;
+        state.papers[i].updatedAt = Date.now();
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  private capsuleEligibilitySignatureForState(state: AppState): string {
+    const linkedIds: string[] = [];
+    for (let paperIndex: number = 0; paperIndex < state.papers.length; paperIndex++) {
+      const source: PaperData = state.papers[paperIndex];
+      if (source.type !== PAPER_TYPE_TODO) {
+        continue;
+      }
+      for (let itemIndex: number = 0; itemIndex < source.items.length; itemIndex++) {
+        const linkedId: string | undefined = source.items[itemIndex].linkedPaperId;
+        if (linkedId !== undefined && linkedIds.indexOf(linkedId) < 0) {
+          linkedIds.push(linkedId);
+        }
+      }
+    }
+    linkedIds.sort();
+    return (state.useCapsuleMode ? '1' : '0') + (state.enablePaperLinks ? '1' : '0') +
+      (state.hideLinkedPapersFromCapsules ? '1' : '0') + ':' + linkedIds.join('|');
+  }
+
+  private refreshCapsuleEligibilitySignature(state: AppState): boolean {
+    const next: string = this.capsuleEligibilitySignatureForState(state);
+    if (!this.capsuleEligibilitySignatureInitialized) {
+      this.capsuleEligibilitySignature = next;
+      this.capsuleEligibilitySignatureInitialized = true;
+      return false;
+    }
+    const changed: boolean = this.capsuleEligibilitySignature !== next;
+    this.capsuleEligibilitySignature = next;
+    return changed;
   }
 
   refreshSystemLanguage(): void {
@@ -1328,6 +1658,14 @@ class PaperStoreImpl {
       return language;
     }
     return UI_LANGUAGE_SYSTEM;
+  }
+
+  private currentSystemLanguage(): string {
+    try {
+      return i18n.System.getSystemLanguage();
+    } catch (error) {
+      return UI_LANGUAGE_ZH_CN;
+    }
   }
 
   private normalizeColorScheme(scheme: string): string {

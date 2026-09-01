@@ -8,7 +8,7 @@ import {
 import { BusinessError } from '@kit.BasicServicesKit';
 import { display, window } from '@kit.ArkUI';
 import { DesktopShell } from '../common/DesktopShell';
-import { PAPER_TYPE_TODO, PaperData } from '../common/Models';
+import { AppState, PAPER_TYPE_TODO, PaperData } from '../common/Models';
 import { PaperStore } from '../common/PaperStore';
 import { TrayService } from '../common/TrayService';
 
@@ -16,6 +16,7 @@ export default class EntryAbility extends UIAbility {
   private windowStage: window.WindowStage | null = null;
   private hostWindow: window.Window | null = null;
   private launchGeneration: number = 0;
+  private recoveryVisible: boolean = false;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     PaperStore.initialize(this.context);
@@ -26,16 +27,7 @@ export default class EntryAbility extends UIAbility {
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     const generation: number = ++this.launchGeneration;
-    DesktopShell.showAll(this.context).then((): void => {
-      if (generation !== this.launchGeneration) {
-        return;
-      }
-      TrayService.install(this.context).then((installed: boolean): void => {
-        if (installed) {
-          DesktopShell.startResident(this.context);
-        }
-      });
-    }).catch((error: Error): void => {
+    this.handleLauncherReactivation(generation).catch((error: Error): void => {
       console.error('handle launcher reactivation failed: ' + error.message);
     });
   }
@@ -86,7 +78,7 @@ export default class EntryAbility extends UIAbility {
     const statusInstalled: boolean = await TrayService.install(this.context);
     let residentStarted: boolean = false;
     if (statusInstalled) {
-      residentStarted = await DesktopShell.startResident(this.context);
+      residentStarted = await this.startResidentWithRetry();
     }
 
     let papers: PaperData[] = PaperStore.listPapers();
@@ -96,30 +88,84 @@ export default class EntryAbility extends UIAbility {
     }
 
     const starts: Promise<boolean>[] = [];
+    const state: AppState = PaperStore.loadState();
     for (let i: number = 0; i < papers.length; i++) {
-      if (papers[i].isVisible) {
+      const delegatedToEdge: boolean = papers[i].isCollapsed && state.useCapsuleMode &&
+        state.useDeepCapsuleMode;
+      if (papers[i].isVisible && !delegatedToEdge) {
         starts.push(DesktopShell.startPaper(this.context, papers[i].id));
       }
     }
     const results: boolean[] = await Promise.all(starts);
-    let paperStarted: boolean = starts.length === 0;
+    let paperStarted: boolean = false;
     for (let i: number = 0; i < results.length; i++) {
       paperStarted = paperStarted || results[i];
     }
+    const capsuleReachable: boolean = await DesktopShell.syncCapsules(this.context);
 
-    if (!statusInstalled && !paperStarted) {
+    if (!statusInstalled && !paperStarted && !capsuleReachable) {
       this.showRecovery('状态栏入口和纸张窗口均未能启动。');
       return;
     }
 
-    if (residentStarted) {
-      await this.context.terminateSelf();
-      return;
+    if (statusInstalled && !residentStarted) {
+      await this.cleanupFailedResident();
+      if (!paperStarted && !capsuleReachable) {
+        this.showRecovery('状态栏入口启动失败，且没有可用的纸片窗口。');
+        return;
+      }
     }
 
-    // If the platform accepted the status-bar item but refused the attached resident,
-    // keep this tiny host alive so the item does not disappear with the process.
-    this.minimizeHost();
+    // A launcher activation must never turn into a manager-style main window.
+    // When papers are reachable, status-bar failures remain available from the
+    // Settings diagnostic and the transparent launcher host terminates.
+    await this.context.terminateSelf();
+  }
+
+  private async handleLauncherReactivation(generation: number): Promise<void> {
+    await DesktopShell.showAll(this.context);
+    if (generation !== this.launchGeneration) {
+      return;
+    }
+    const statusInstalled: boolean = await TrayService.install(this.context);
+    if (generation !== this.launchGeneration) {
+      return;
+    }
+    const residentStarted: boolean = statusInstalled ? await this.startResidentWithRetry() : false;
+    if (generation !== this.launchGeneration) {
+      return;
+    }
+    if (statusInstalled && !residentStarted) {
+      await this.cleanupFailedResident();
+      if (generation !== this.launchGeneration) {
+        return;
+      }
+      if (PaperStore.listPapers().length === 0) {
+        this.showRecovery('状态栏入口启动失败，且没有可用的纸片窗口。');
+        return;
+      }
+    }
+    await this.context.terminateSelf();
+  }
+
+  private async cleanupFailedResident(): Promise<void> {
+    const removed: boolean = await TrayService.remove(this.context);
+    AppStorage.setOrCreate<string>('statusBarStatus', removed ?
+      'resident error: inactive item removed' : 'resident error: unable to remove inactive item');
+  }
+
+  private async startResidentWithRetry(): Promise<boolean> {
+    for (let attempt: number = 0; attempt < 3; attempt++) {
+      if (await DesktopShell.startResident(this.context)) {
+        return true;
+      }
+      if (attempt < 2) {
+        await new Promise<void>((resolve: () => void): void => {
+          setTimeout(resolve, 240 * (attempt + 1));
+        });
+      }
+    }
+    return false;
   }
 
   private applyHiddenHostStyle(): void {
@@ -129,37 +175,40 @@ export default class EntryAbility extends UIAbility {
     }
     try {
       win.setWindowDecorVisible(false);
+    } catch (error) {
+      console.error('hide entry decor failed: ' + String(error));
+    }
+    try {
       win.setWindowTitleButtonVisible(false, false, false);
-      win.setWindowDecorHeight(0);
       win.setWindowTitleMoveEnabled(false);
+    } catch (error) {
+      console.error('hide entry title controls failed: ' + String(error));
+    }
+    try {
       win.setWindowBackgroundColor('#00000000');
+    } catch (error) {
+      console.error('clear entry background failed: ' + String(error));
+    }
+    try {
       win.setWindowContainerColor('#00000000', '#00000000');
     } catch (error) {
-      console.error('style entry host failed: ' + String(error));
+      console.error('clear entry container failed: ' + String(error));
     }
     win.setWindowShadowEnabled(false).catch((error: BusinessError): void => {
       console.error('disable entry shadow failed: ' + error.message);
     });
-  }
-
-  private minimizeHost(): void {
-    const win: window.Window | null = this.hostWindow;
-    if (win === null) {
-      return;
+    if (!this.recoveryVisible) {
+      win.setWindowTouchable(false).catch((error: BusinessError): void => {
+        console.error('disable entry touch failed: ' + error.message);
+      });
+      win.setWindowFocusable(false).catch((error: BusinessError): void => {
+        console.error('disable entry focus failed: ' + error.message);
+      });
     }
-    this.applyHiddenHostStyle();
-    win.setWindowTouchable(false).catch((error: BusinessError): void => {
-      console.error('disable entry host touch failed: ' + error.message);
-    });
-    win.setWindowFocusable(false).catch((error: BusinessError): void => {
-      console.error('disable entry host focus failed: ' + error.message);
-    });
-    win.minimize().catch((error: BusinessError): void => {
-      console.error('minimize entry host failed: ' + error.message);
-    });
   }
 
   private showRecovery(reason: string): void {
+    this.recoveryVisible = true;
     AppStorage.setOrCreate<string>('recoveryReason', reason);
     const stage: window.WindowStage | null = this.windowStage;
     const win: window.Window | null = this.hostWindow;

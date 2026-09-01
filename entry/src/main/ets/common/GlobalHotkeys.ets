@@ -1,7 +1,8 @@
-import { Want, common } from '@kit.AbilityKit';
+import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { KeyCode, inputConsumer } from '@kit.InputKit';
 import { PAPER_TYPE_NOTE, PAPER_TYPE_TODO, PaperData } from './Models';
+import { DesktopShell } from './DesktopShell';
 import { PaperStore } from './PaperStore';
 
 const ENABLED_KEY: string = 'globalHotkeysEnabled';
@@ -26,6 +27,16 @@ class GlobalHotkeysImpl {
     finalKey: KeyCode.KEYCODE_P,
     isRepeat: false
   };
+  private readonly showAllOptions: inputConsumer.HotkeyOptions = {
+    preKeys: [KeyCode.KEYCODE_CTRL_LEFT, KeyCode.KEYCODE_ALT_LEFT],
+    finalKey: KeyCode.KEYCODE_S,
+    isRepeat: false
+  };
+  private readonly hideAllOptions: inputConsumer.HotkeyOptions = {
+    preKeys: [KeyCode.KEYCODE_CTRL_LEFT, KeyCode.KEYCODE_ALT_LEFT],
+    finalKey: KeyCode.KEYCODE_H,
+    isRepeat: false
+  };
   private readonly todoOptions: inputConsumer.HotkeyOptions = {
     preKeys: [KeyCode.KEYCODE_CTRL_LEFT, KeyCode.KEYCODE_ALT_LEFT],
     finalKey: KeyCode.KEYCODE_T,
@@ -36,17 +47,31 @@ class GlobalHotkeysImpl {
     finalKey: KeyCode.KEYCODE_N,
     isRepeat: false
   };
+  private readonly exitOptions: inputConsumer.HotkeyOptions = {
+    preKeys: [KeyCode.KEYCODE_CTRL_LEFT, KeyCode.KEYCODE_ALT_LEFT],
+    finalKey: KeyCode.KEYCODE_Q,
+    isRepeat: false
+  };
 
   private readonly showCallback: (options: inputConsumer.HotkeyOptions) => void =
-    (_options: inputConsumer.HotkeyOptions): void => this.showManager();
+    (_options: inputConsumer.HotkeyOptions): void => this.toggleVisibility();
+  private readonly showAllCallback: (options: inputConsumer.HotkeyOptions) => void =
+    (_options: inputConsumer.HotkeyOptions): void => this.setAllVisible(true);
+  private readonly hideAllCallback: (options: inputConsumer.HotkeyOptions) => void =
+    (_options: inputConsumer.HotkeyOptions): void => this.setAllVisible(false);
   private readonly todoCallback: (options: inputConsumer.HotkeyOptions) => void =
     (_options: inputConsumer.HotkeyOptions): void => this.createPaper(PAPER_TYPE_TODO);
   private readonly noteCallback: (options: inputConsumer.HotkeyOptions) => void =
     (_options: inputConsumer.HotkeyOptions): void => this.createPaper(PAPER_TYPE_NOTE);
+  private readonly exitCallback: (options: inputConsumer.HotkeyOptions) => void =
+    (_options: inputConsumer.HotkeyOptions): void => this.exitApplication();
 
   private showRegistered: boolean = false;
+  private showAllRegistered: boolean = false;
+  private hideAllRegistered: boolean = false;
   private todoRegistered: boolean = false;
   private noteRegistered: boolean = false;
+  private exitRegistered: boolean = false;
 
   configure(context: common.UIAbilityContext): void {
     this.abilityContext = context;
@@ -89,7 +114,8 @@ class GlobalHotkeysImpl {
   }
 
   private registerAll(): void {
-    if (this.showRegistered && this.todoRegistered && this.noteRegistered) {
+    if (this.showRegistered && this.showAllRegistered && this.hideAllRegistered &&
+      this.todoRegistered && this.noteRegistered && this.exitRegistered) {
       this.publishStatus(STATUS_ACTIVE);
       return;
     }
@@ -101,10 +127,16 @@ class GlobalHotkeysImpl {
     try {
       inputConsumer.on('hotkeyChange', this.showOptions, this.showCallback);
       this.showRegistered = true;
+      inputConsumer.on('hotkeyChange', this.showAllOptions, this.showAllCallback);
+      this.showAllRegistered = true;
+      inputConsumer.on('hotkeyChange', this.hideAllOptions, this.hideAllCallback);
+      this.hideAllRegistered = true;
       inputConsumer.on('hotkeyChange', this.todoOptions, this.todoCallback);
       this.todoRegistered = true;
       inputConsumer.on('hotkeyChange', this.noteOptions, this.noteCallback);
       this.noteRegistered = true;
+      inputConsumer.on('hotkeyChange', this.exitOptions, this.exitCallback);
+      this.exitRegistered = true;
       this.publishStatus(STATUS_ACTIVE);
     } catch (error) {
       const status: string = this.statusForError(error as BusinessError);
@@ -115,6 +147,14 @@ class GlobalHotkeysImpl {
 
   private unregisterAll(): boolean {
     let removed: boolean = true;
+    if (this.exitRegistered) {
+      try {
+        inputConsumer.off('hotkeyChange', this.exitOptions, this.exitCallback);
+        this.exitRegistered = false;
+      } catch (error) {
+        removed = false;
+      }
+    }
     if (this.noteRegistered) {
       try {
         inputConsumer.off('hotkeyChange', this.noteOptions, this.noteCallback);
@@ -127,6 +167,22 @@ class GlobalHotkeysImpl {
       try {
         inputConsumer.off('hotkeyChange', this.todoOptions, this.todoCallback);
         this.todoRegistered = false;
+      } catch (error) {
+        removed = false;
+      }
+    }
+    if (this.hideAllRegistered) {
+      try {
+        inputConsumer.off('hotkeyChange', this.hideAllOptions, this.hideAllCallback);
+        this.hideAllRegistered = false;
+      } catch (error) {
+        removed = false;
+      }
+    }
+    if (this.showAllRegistered) {
+      try {
+        inputConsumer.off('hotkeyChange', this.showAllOptions, this.showAllCallback);
+        this.showAllRegistered = false;
       } catch (error) {
         removed = false;
       }
@@ -152,7 +208,7 @@ class GlobalHotkeysImpl {
     return STATUS_ERROR;
   }
 
-  private showManager(): void {
+  private toggleVisibility(): void {
     const context: common.UIAbilityContext | null = this.abilityContext;
     if (!this.enabled) {
       return;
@@ -161,7 +217,16 @@ class GlobalHotkeysImpl {
       this.publishStatus(STATUS_ERROR);
       return;
     }
-    this.bringManagerToFront(context)
+    const papers: PaperData[] = PaperStore.listPapers();
+    let anyVisible: boolean = false;
+    for (let i: number = 0; i < papers.length; i++) {
+      if (papers[i].isVisible) {
+        anyVisible = true;
+        break;
+      }
+    }
+    const operation: Promise<void> = anyVisible ? DesktopShell.hideAll(context) : DesktopShell.showAll(context);
+    operation
       .then((): void => {
         if (this.isActiveContext(context)) {
           this.publishStatus(STATUS_ACTIVE);
@@ -172,6 +237,41 @@ class GlobalHotkeysImpl {
           this.publishStatus(STATUS_ERROR);
         }
       });
+  }
+
+  private setAllVisible(visible: boolean): void {
+    const context: common.UIAbilityContext | null = this.abilityContext;
+    if (!this.enabled || context === null) {
+      if (context === null) {
+        this.publishStatus(STATUS_ERROR);
+      }
+      return;
+    }
+    const operation: Promise<void> = visible ? DesktopShell.showAll(context) : DesktopShell.hideAll(context);
+    operation.then((): void => {
+      if (this.isActiveContext(context)) {
+        this.publishStatus(STATUS_ACTIVE);
+      }
+    }).catch((_error: BusinessError): void => {
+      if (this.isActiveContext(context)) {
+        this.publishStatus(STATUS_ERROR);
+      }
+    });
+  }
+
+  private exitApplication(): void {
+    const context: common.UIAbilityContext | null = this.abilityContext;
+    if (!this.enabled || context === null) {
+      if (context === null) {
+        this.publishStatus(STATUS_ERROR);
+      }
+      return;
+    }
+    DesktopShell.exitApplication(context).catch((_error: Error): void => {
+      if (this.isActiveContext(context)) {
+        this.publishStatus(STATUS_ERROR);
+      }
+    });
   }
 
   private createPaper(type: string): void {
@@ -183,10 +283,10 @@ class GlobalHotkeysImpl {
       this.publishStatus(STATUS_ERROR);
       return;
     }
-    this.bringManagerToFront(context)
-      .then((): void => {
+    DesktopShell.createPaper(context, type)
+      .then((paper: PaperData | null): void => {
         if (this.isActiveContext(context)) {
-          this.createAndStartPaper(context, type);
+          this.publishStatus(paper === null ? STATUS_ERROR : STATUS_ACTIVE);
         }
       })
       .catch((_error: BusinessError): void => {
@@ -194,55 +294,6 @@ class GlobalHotkeysImpl {
           this.publishStatus(STATUS_ERROR);
         }
       });
-  }
-
-  private createAndStartPaper(context: common.UIAbilityContext, type: string): void {
-    const paper: PaperData | null = PaperStore.createPaper(type);
-    if (paper === null) {
-      this.publishStatus(STATUS_ERROR);
-      return;
-    }
-    const want: Want = {
-      bundleName: 'com.snownico.papertodo',
-      moduleName: 'entry',
-      abilityName: 'PaperAbility',
-      parameters: {
-        paperId: paper.id,
-        paperCommand: 'show'
-      }
-    };
-    context.startAbility(want)
-      .then((): void => {
-        if (this.isActiveContext(context)) {
-          this.publishStatus(STATUS_ACTIVE);
-        }
-      })
-      .catch((_error: BusinessError): void => {
-        PaperStore.deletePaper(paper.id);
-        if (this.isActiveContext(context)) {
-          this.publishStatus(STATUS_ERROR);
-        }
-      });
-  }
-
-  private bringManagerToFront(context: common.UIAbilityContext): Promise<void> {
-    const want: Want = {
-      bundleName: 'com.snownico.papertodo',
-      moduleName: 'entry',
-      abilityName: 'EntryAbility'
-    };
-    try {
-      const mainWindow = context.windowStage.getMainWindowSync();
-      return mainWindow.restore()
-        .catch((_restoreError: BusinessError): Promise<void> => mainWindow.showWindow())
-        .catch((_showError: BusinessError): Promise<void> => context.startAbility(want));
-    } catch (_error) {
-      try {
-        return context.startAbility(want);
-      } catch (startError) {
-        return Promise.reject<void>(startError);
-      }
-    }
   }
 
   private isActiveContext(context: common.UIAbilityContext): boolean {

@@ -104,6 +104,23 @@ export default function markdownLiteTest(): void {
       expect(lines[2].linkUrl === undefined).assertTrue();
     });
 
+    it('scansTildeAndBacktickFencesWithoutParsingTheirContents', 0, () => {
+      const tildeLines: MarkdownLine[] = parseMarkdownLines(
+        'before\n~~~markdown\n![hidden](i:asset) https://ignored.example\n~~~\nafter',
+        MARKDOWN_ENHANCED
+      );
+      expect(tildeLines.length).assertEqual(3);
+      expect(tildeLines[1].kind).assertEqual(MD_KIND_CODE);
+      expect(tildeLines[1].text).assertEqual('![hidden](i:asset) https://ignored.example');
+      expect(tildeLines[1].linkUrl === undefined).assertTrue();
+
+      const mismatchedFence: MarkdownLine[] = parseMarkdownLines(
+        '````\n~~~ remains code\n````', MARKDOWN_ENHANCED
+      );
+      expect(mismatchedFence.length).assertEqual(1);
+      expect(mismatchedFence[0].kind).assertEqual(MD_KIND_CODE);
+    });
+
     it('convertsSupportedSimpleHtmlToReadableText', 0, () => {
       expect(stripInlineMarkers(
         '<strong>Bold</strong> <em>quiet</em> <del>done</del> <u>under</u> <code>x</code>'
@@ -120,6 +137,37 @@ export default function markdownLiteTest(): void {
       expect(findClickableUrl(
         "<a href='https://example.com/中文'>中文链接</a>"
       )).assertEqual('https://example.com/中文');
+    });
+
+    it('rendersWhitelistedInlineHtmlAsRichTokens', 0, () => {
+      const tokens: MarkdownInlineToken[] = parseMarkdownInlineTokens(
+        '<strong>Bold <em>quiet</em></strong> <s>done</s> <u>under</u> ' +
+          '<code>https://code.example</code> <a href="https://example.com/page"><i>Open</i></a>'
+      );
+      let boldSeen: boolean = false;
+      let italicSeen: boolean = false;
+      let strikeSeen: boolean = false;
+      let codeSeen: boolean = false;
+      let linkSeen: boolean = false;
+      for (let i: number = 0; i < tokens.length; i++) {
+        const token: MarkdownInlineToken = tokens[i];
+        boldSeen = boldSeen || (token.text === 'Bold ' && token.style.bold);
+        italicSeen = italicSeen || (token.text === 'quiet' && token.style.bold && token.style.italic);
+        strikeSeen = strikeSeen || (token.text === 'done' && token.style.strike);
+        codeSeen = codeSeen || (token.text === 'https://code.example' && token.kind === MD_INLINE_CODE &&
+          token.linkUrl === undefined);
+        linkSeen = linkSeen || (token.text === 'Open' && token.kind === MD_INLINE_LINK && token.style.italic &&
+          token.linkUrl === 'https://example.com/page');
+      }
+      expect(boldSeen).assertTrue();
+      expect(italicSeen).assertTrue();
+      expect(strikeSeen).assertTrue();
+      expect(codeSeen).assertTrue();
+      expect(linkSeen).assertTrue();
+
+      const lines: MarkdownLine[] = parseMarkdownLines('<b>same renderer</b>', MARKDOWN_ENHANCED);
+      expect(lines[0].inlineTokens !== undefined).assertTrue();
+      expect((lines[0].inlineTokens ?? [])[0].text).assertEqual('same renderer');
     });
 
     it('parsesLocalImageMarkersAndDefaultsToFullWidth', 0, () => {
@@ -149,6 +197,27 @@ export default function markdownLiteTest(): void {
       expect(lines[0].imagePercent).assertEqual(75);
       expect(lines[1].imagePercent).assertEqual(35);
       expect(lines[2].imagePercent).assertEqual(45);
+    });
+
+    it('preservesLocalImageDimensionMetadataAndWidthSyntax', 0, () => {
+      const lines: MarkdownLine[] = parseMarkdownLines(
+        '![wide|320x180](i:wide)\n![tall|120×240](i:tall)\n![fixed](i:fixed){width=280}\n' +
+          '![combined|640x360, 75%](i:combined)\n![percent|75%](i:percent){width=40%}',
+        MARKDOWN_ENHANCED
+      );
+      expect(lines.length).assertEqual(5);
+      expect(lines[0].kind).assertEqual(MD_KIND_IMAGE);
+      expect(lines[0].imageWidth).assertEqual(320);
+      expect(lines[0].imageHeight).assertEqual(180);
+      expect(lines[0].imagePercent).assertEqual(100);
+      expect(lines[1].imageWidth).assertEqual(120);
+      expect(lines[1].imageHeight).assertEqual(240);
+      expect(lines[2].imageWidth).assertEqual(280);
+      expect(lines[2].imageHeight === undefined).assertTrue();
+      expect(lines[3].imageWidth).assertEqual(640);
+      expect(lines[3].imageHeight).assertEqual(360);
+      expect(lines[3].imagePercent).assertEqual(75);
+      expect(lines[4].imagePercent).assertEqual(40);
     });
 
     it('clampsImagePercentagesToSafeBounds', 0, () => {

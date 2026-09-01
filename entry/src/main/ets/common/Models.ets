@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION: number = 4;
+export const SCHEMA_VERSION: number = 7;
 
 export const PAPER_TYPE_TODO: string = 'todo';
 export const PAPER_TYPE_NOTE: string = 'note';
@@ -41,18 +41,23 @@ export const QUICK_LAUNCH_FOLDER: string = 'folder';
 export const EDGE_SIDE_RIGHT: string = 'right';
 export const DEFAULT_DISPLAY_ID: string = 'default';
 
-export const PAPER_MIN_WIDTH: number = 180;
+export const PAPER_MIN_WIDTH: number = 96;
 export const PAPER_MIN_HEIGHT: number = 160;
 export const TODO_DEFAULT_WIDTH: number = 280;
 export const TODO_DEFAULT_HEIGHT: number = 340;
 export const NOTE_DEFAULT_WIDTH: number = 320;
 export const NOTE_DEFAULT_HEIGHT: number = 360;
 export const CAPSULE_WIDTH: number = 108;
-export const CAPSULE_MIN_WIDTH: number = 76;
+export const CAPSULE_MIN_WIDTH: number = 54;
 export const CAPSULE_MAX_WIDTH: number = 280;
 export const CAPSULE_HEIGHT: number = 46;
-export const CAPSULE_CLOSE_WIDTH: number = 28;
+export const CAPSULE_CLOSE_WIDTH: number = 14;
+export const CAPSULE_BODY_HEIGHT: number = 30;
+export const CAPSULE_CHROME_MARGIN: number = 8;
 export const CAPSULE_GAP_DEFAULT: number = 4;
+export const CAPSULE_EDGE_START_TOP: number = 48;
+export const CAPSULE_SAFE_MARGIN: number = 8;
+export const CAPSULE_PLATFORM_MIN_WIDTH: number = 40;
 export const EXPANDED_EDGE_INSET: number = 36;
 
 export const MAX_PAPERS: number = 100;
@@ -136,6 +141,10 @@ export interface AppState {
   markdownRenderMode: string;
   useCapsuleMode: boolean;
   useDeepCapsuleMode: boolean;
+  showDeepCapsuleWhileExpanded: boolean;
+  useMasterCapsule: boolean;
+  capsuleCollapseAllActive: boolean;
+  capsuleStartTop: number;
   todoVisualSize: string;
   autoClearCompletedTodos: boolean;
   autoBottomCompleted: boolean;
@@ -145,7 +154,9 @@ export interface AppState {
   collapseExpandedEdgeCapsuleOnClick: boolean;
   hideEdgeCapsuleCloseButtonOnHover: boolean;
   edgeCapsuleTitleCharacterLimit: number;
+  titleCharacterLimit: number;
   enablePaperLinks: boolean;
+  hideLinkedPapersFromCapsules: boolean;
   overallFontScale: number;
   noteTextSize: string;
   noteTextBold: boolean;

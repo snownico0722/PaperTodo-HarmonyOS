@@ -10,7 +10,7 @@ import { statusBarManager } from '@kit.DeskTopExtensionKit';
 import { window } from '@kit.ArkUI';
 import { DesktopShell } from '../common/DesktopShell';
 import { GlobalHotkeys } from '../common/GlobalHotkeys';
-import { PAPER_TYPE_NOTE, PAPER_TYPE_TODO, PaperData } from '../common/Models';
+import { PAPER_TYPE_NOTE, PAPER_TYPE_TODO, PaperData, UI_LANGUAGE_SYSTEM } from '../common/Models';
 import { PaperStore } from '../common/PaperStore';
 import {
   STATUS_EVENT_HIDE_ALL,
@@ -23,12 +23,22 @@ import {
 import {
   TRAY_MENU_NEW_NOTE,
   TRAY_MENU_NEW_TODO,
+  TRAY_MENU_EXIT,
+  TRAY_MENU_PAPER_OVERFLOW,
+  TRAY_MENU_PAPER_PREFIX,
   TRAY_MENU_SETTINGS,
-  TRAY_MENU_TOGGLE_ALL
+  TRAY_MENU_TOGGLE_ALL,
+  TrayService
 } from '../common/TrayService';
 
 export default class TrayResidentAbility extends UIAbility {
   private mainWindow: window.Window | null = null;
+  private menuWatchTimer: number = -1;
+  private menuRefreshPending: boolean = false;
+  private observedPaperMenuSignature: string = '';
+  private static readonly MENU_WATCH_INTERVAL_MS: number = 1500;
+  private readonly instanceToken: string = 'resident_' + Date.now().toString(36) + '_' +
+    Math.floor(Math.random() * 0xFFFFFF).toString(36);
   private readonly rightMenuCallback: (eventData: emitter.EventData) => void =
     (eventData: emitter.EventData): void => this.handleRightMenu(eventData);
   private readonly newTodoCallback: () => void = (): void => {
@@ -51,6 +61,10 @@ export default class TrayResidentAbility extends UIAbility {
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     PaperStore.initialize(this.context);
+    this.observedPaperMenuSignature = this.paperMenuSignature();
+    this.startMenuWatch();
+    AppStorage.setOrCreate<boolean>('trayResidentReady', false);
+    AppStorage.setOrCreate<string>('trayResidentToken', this.instanceToken);
     AppStorage.setOrCreate<number>('systemColorMode', this.context.config.colorMode ??
       ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT);
     GlobalHotkeys.configure(this.context);
@@ -69,12 +83,15 @@ export default class TrayResidentAbility extends UIAbility {
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
     this.mainWindow = windowStage.getMainWindowSync();
+    this.prepareHiddenHostWindow();
     windowStage.loadContent('pages/Host', (error: BusinessError): void => {
       if (error.code !== 0) {
         console.error('load resident host failed: ' + JSON.stringify(error));
-        return;
       }
       this.hideHostWindow();
+      if (AppStorage.get<string>('trayResidentToken') === this.instanceToken) {
+        AppStorage.setOrCreate<boolean>('trayResidentReady', true);
+      }
     });
   }
 
@@ -82,8 +99,18 @@ export default class TrayResidentAbility extends UIAbility {
     this.hideHostWindow();
   }
 
+  onForeground(): void {
+    this.hideHostWindow();
+  }
+
   onConfigurationUpdate(config: Configuration): void {
     PaperStore.refreshSystemLanguage();
+    const uiLanguage: string = AppStorage.get<string>('uiLanguage') ?? UI_LANGUAGE_SYSTEM;
+    if (uiLanguage === UI_LANGUAGE_SYSTEM) {
+      TrayService.refreshMenu(this.context).catch((error: Error): void => {
+        console.error('refresh status bar menu system language failed: ' + error.message);
+      });
+    }
     if (config.colorMode !== undefined) {
       AppStorage.setOrCreate<number>('systemColorMode', config.colorMode);
     }
@@ -94,7 +121,12 @@ export default class TrayResidentAbility extends UIAbility {
   }
 
   onDestroy(): void {
+    this.stopMenuWatch();
     PaperStore.flushNow();
+    if (AppStorage.get<string>('trayResidentToken') === this.instanceToken) {
+      AppStorage.setOrCreate<boolean>('trayResidentReady', false);
+      AppStorage.delete('trayResidentToken');
+    }
     GlobalHotkeys.shutdown();
     try {
       statusBarManager.off('rightMenuClick', this.rightMenuCallback);
@@ -129,6 +161,19 @@ export default class TrayResidentAbility extends UIAbility {
       this.toggleAll();
     } else if (menuCode === TRAY_MENU_SETTINGS) {
       DesktopShell.openSettings(this.context);
+    } else if (menuCode === TRAY_MENU_EXIT) {
+      DesktopShell.exitApplication(this.context);
+    } else if (menuCode.startsWith(TRAY_MENU_PAPER_PREFIX)) {
+      const encodedPaperId: string = menuCode.substring(TRAY_MENU_PAPER_PREFIX.length);
+      try {
+        this.togglePaper(decodeURIComponent(encodedPaperId));
+      } catch (error) {
+        console.error('decode status bar paper menu failed: ' + String(error));
+      }
+    } else if (menuCode === TRAY_MENU_PAPER_OVERFLOW) {
+      // The final submenu row is an informational remainder summary. Keeping a
+      // valid notify-only action avoids the platform rejecting the whole menu.
+      return;
     }
   }
 
@@ -156,41 +201,115 @@ export default class TrayResidentAbility extends UIAbility {
     if (rawId === undefined || rawId === null) {
       return;
     }
-    const paper: PaperData | null = PaperStore.getPaper(String(rawId));
+    this.togglePaper(String(rawId));
+  }
+
+  private togglePaper(paperId: string): void {
+    const paper: PaperData | null = PaperStore.getPaper(paperId);
     if (paper === null) {
       return;
     }
+    const command: string = paper.isVisible ? 'hide' : 'show';
     if (paper.isVisible) {
       PaperStore.setPaperVisible(paper.id, false);
-      DesktopShell.startPaper(this.context, paper.id, 'hide');
     } else {
       PaperStore.setPaperVisible(paper.id, true);
-      DesktopShell.startPaper(this.context, paper.id, 'show');
     }
+    DesktopShell.startPaper(this.context, paper.id, command)
+      .then((_started: boolean): Promise<boolean> => DesktopShell.syncCapsules(this.context))
+      .then((_reachable: boolean): Promise<boolean> => TrayService.refreshMenu(this.context))
+      .then((_refreshed: boolean): void => {
+        this.observedPaperMenuSignature = this.paperMenuSignature();
+      })
+      .catch((error: Error): void => {
+        console.error('toggle paper from status bar menu failed: ' + error.message);
+      });
+  }
+
+  private startMenuWatch(): void {
+    if (this.menuWatchTimer >= 0) {
+      return;
+    }
+    this.menuWatchTimer = setInterval((): void => this.checkPaperMenuRevision(),
+      TrayResidentAbility.MENU_WATCH_INTERVAL_MS);
+  }
+
+  private stopMenuWatch(): void {
+    if (this.menuWatchTimer < 0) {
+      return;
+    }
+    clearInterval(this.menuWatchTimer);
+    this.menuWatchTimer = -1;
+  }
+
+  private checkPaperMenuRevision(): void {
+    const nextSignature: string = this.paperMenuSignature();
+    if (nextSignature === this.observedPaperMenuSignature || this.menuRefreshPending) {
+      return;
+    }
+    this.menuRefreshPending = true;
+    TrayService.refreshMenu(this.context).then((success: boolean): void => {
+      if (success) {
+        this.observedPaperMenuSignature = nextSignature;
+      }
+      this.menuRefreshPending = false;
+    }).catch((error: Error): void => {
+      this.menuRefreshPending = false;
+      console.error('watch status bar paper menu failed: ' + error.message);
+    });
+  }
+
+  private paperMenuSignature(): string {
+    const papers: PaperData[] = PaperStore.listPapers();
+    const revision: number = AppStorage.get<number>('paperRevision') ?? 0;
+    const parts: string[] = [revision.toString(), papers.length.toString()];
+    for (let i: number = 0; i < papers.length; i++) {
+      const paper: PaperData = papers[i];
+      parts.push(paper.id, paper.type, paper.title, paper.isVisible ? '1' : '0');
+    }
+    return parts.join('\u0000');
   }
 
   private hideHostWindow(): void {
+    this.prepareHiddenHostWindow();
+    this.context.hideAbility().catch((error: BusinessError): void => {
+      console.error('hide resident host failed: ' + error.message);
+    });
+  }
+
+  private prepareHiddenHostWindow(): void {
     const win: window.Window | null = this.mainWindow;
     if (win === null) {
       return;
     }
     try {
       win.setWindowDecorVisible(false);
+    } catch (error) {
+      console.error('hide resident decor failed: ' + String(error));
+    }
+    try {
       win.setWindowTitleButtonVisible(false, false, false);
-      win.setWindowDecorHeight(0);
+    } catch (error) {
+      console.error('hide resident title buttons failed: ' + String(error));
+    }
+    try {
       win.setWindowBackgroundColor('#00000000');
+    } catch (error) {
+      console.error('clear resident background failed: ' + String(error));
+    }
+    try {
       win.setWindowContainerColor('#00000000', '#00000000');
     } catch (error) {
-      console.error('style resident host failed: ' + String(error));
+      console.error('clear resident container failed: ' + String(error));
     }
+    win.setWindowShadowEnabled(false).catch((error: BusinessError): void => {
+      console.error('disable resident shadow failed: ' + error.message);
+    });
     win.setWindowTouchable(false).catch((error: BusinessError): void => {
       console.error('disable resident touch failed: ' + error.message);
     });
     win.setWindowFocusable(false).catch((error: BusinessError): void => {
       console.error('disable resident focus failed: ' + error.message);
-    });
-    this.context.hideAbility().catch((error: BusinessError): void => {
-      console.error('hide resident host failed: ' + error.message);
     });
   }
 }
