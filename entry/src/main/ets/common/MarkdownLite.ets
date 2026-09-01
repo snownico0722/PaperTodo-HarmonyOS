@@ -36,6 +36,11 @@ interface InlineStyle {
   link: string;
 }
 
+interface TaskListMatch {
+  done: boolean;
+  body: string;
+}
+
 const PLAIN_STYLE: InlineStyle = {
   bold: false,
   italic: false,
@@ -88,6 +93,27 @@ export function parseMarkdownLines(content: string, mode: string): MarkdownLine[
         result.push(createEnhancedLine('line_' + i, MD_KIND_QUOTE, trimmed.substring(2), 0));
       } else {
         result.push(createPlainLine('line_' + i, MD_KIND_QUOTE, source, 0));
+      }
+      continue;
+    }
+
+    const task: TaskListMatch | null = parseTaskList(trimmed);
+    if (task !== null) {
+      if (mode === MARKDOWN_ENHANCED) {
+        let bodySpans: MarkdownInlineSpan[] = parseInlineMarkdown(task.body);
+        if (task.done) {
+          bodySpans = strikeSpans(bodySpans);
+        }
+        const spans: MarkdownInlineSpan[] = prependSpan(task.done ? '☑ ' : '☐ ', bodySpans);
+        result.push({
+          id: 'line_' + i,
+          kind: MD_KIND_BULLET,
+          text: inlineText(spans),
+          level: 0,
+          spans: rekeySpans(spans)
+        });
+      } else {
+        result.push(createPlainLine('line_' + i, MD_KIND_BULLET, source, 0));
       }
       continue;
     }
@@ -356,6 +382,57 @@ function extractHref(opening: string): string {
     return end > start ? opening.substring(start, end).trim() : '';
   }
   return '';
+}
+
+function parseTaskList(trimmed: string): TaskListMatch | null {
+  if (trimmed.length < 7) {
+    return null;
+  }
+  const marker: string = trimmed.charAt(0);
+  if (marker !== '-' && marker !== '*' && marker !== '+') {
+    return null;
+  }
+  let i: number = 1;
+  while (i < trimmed.length && trimmed.charAt(i) === ' ') {
+    i += 1;
+  }
+  if (i + 2 >= trimmed.length || trimmed.charAt(i) !== '[' || trimmed.charAt(i + 2) !== ']') {
+    return null;
+  }
+  const state: string = trimmed.charAt(i + 1);
+  if (state !== ' ' && state !== 'x' && state !== 'X') {
+    return null;
+  }
+  i += 3;
+  if (i >= trimmed.length || trimmed.charAt(i) !== ' ') {
+    return null;
+  }
+  while (i < trimmed.length && trimmed.charAt(i) === ' ') {
+    i += 1;
+  }
+  const body: string = trimmed.substring(i).trim();
+  if (body.length === 0) {
+    return null;
+  }
+  return { done: state !== ' ', body: body };
+}
+
+function strikeSpans(spans: MarkdownInlineSpan[]): MarkdownInlineSpan[] {
+  const result: MarkdownInlineSpan[] = [];
+  for (let i: number = 0; i < spans.length; i++) {
+    const span: MarkdownInlineSpan = spans[i];
+    result.push({
+      id: span.id,
+      text: span.text,
+      bold: span.bold,
+      italic: span.italic,
+      strike: true,
+      underline: span.underline,
+      code: span.code,
+      link: span.link
+    });
+  }
+  return result;
 }
 
 function prependSpan(prefix: string, spans: MarkdownInlineSpan[]): MarkdownInlineSpan[] {
