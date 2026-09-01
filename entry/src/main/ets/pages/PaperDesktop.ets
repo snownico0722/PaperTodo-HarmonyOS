@@ -40,6 +40,7 @@ import {
   TODO_VISUAL_XLARGE
 } from '../common/Models';
 import {
+  MarkdownInlineSpan,
   MarkdownLine,
   MD_KIND_CODE,
   MD_KIND_HEADING,
@@ -61,6 +62,7 @@ const CAPSULE_REVEAL_MS: number = 110;
 const CAPSULE_HIDE_MS: number = 130;
 const CAPSULE_DRAG_THRESHOLD: number = 4;
 const CAPSULE_CLICK_SUPPRESS_MS: number = 250;
+const NOTE_LINK_CLICK_SUPPRESS_MS: number = 300;
 
 interface NoteEditResult {
   text: string;
@@ -125,6 +127,7 @@ struct PaperDesktop {
   private todoSelectionEnd: Map<string, number> = new Map<string, number>();
   private noteController: TextAreaController = new TextAreaController();
   private noteZoomGestureBase: number = NOTE_ZOOM_DEFAULT;
+  private suppressNotePreviewClickUntil: number = 0;
   private capsuleMotion: CapsuleMotion = new CapsuleMotion();
   private capsuleHovered: boolean = false;
   private capsuleDragging: boolean = false;
@@ -281,6 +284,14 @@ struct PaperDesktop {
 
   private dangerColor(): string {
     return this.palette().danger;
+  }
+
+  private linkColor(): string {
+    return this.palette().link;
+  }
+
+  private quoteBorderColor(): string {
+    return this.palette().quoteBorder;
   }
 
   private titleOrFallback(): string {
@@ -1324,6 +1335,29 @@ struct PaperDesktop {
     return Math.round(base * this.noteZoom * 10) / 10;
   }
 
+  private openMarkdownLink(url: string): void {
+    const link: string = url.trim();
+    const lower: string = link.toLowerCase();
+    if (!lower.startsWith('http://') && !lower.startsWith('https://')) {
+      console.warn('PaperTodo ignored unsupported Markdown link: ' + link);
+      return;
+    }
+    this.suppressNotePreviewClickUntil = Date.now() + NOTE_LINK_CLICK_SUPPRESS_MS;
+    try {
+      this.hostContext().openLink(link).catch((error: BusinessError): void => {
+        console.error('openLink failed: ' + error.message);
+      });
+    } catch (error) {
+      console.error('openLink threw: ' + String(error));
+    }
+  }
+
+  private activateNotePreview(): void {
+    if (Date.now() >= this.suppressNotePreviewClickUntil) {
+      this.toggleNoteBrowse();
+    }
+  }
+
   private updateNote(value: string): void {
     const limited: string = value.slice(0, NOTE_MAX_LENGTH);
     const result: NoteEditResult = this.applyMarkdownListContinuation(this.content, limited);
@@ -1421,6 +1455,57 @@ struct PaperDesktop {
 
   private clamp(value: number, minValue: number, maxValue: number): number {
     return Math.max(minValue, Math.min(value, maxValue));
+  }
+
+  @Builder
+  private MarkdownInlineLine(
+    line: MarkdownLine,
+    fontSize: number,
+    baseColor: string,
+    baseWeight: FontWeight,
+    prefix: string,
+    prefixColor: string
+  ) {
+    Text() {
+      if (prefix.length > 0) {
+        Span(prefix)
+          .fontSize(fontSize)
+          .fontColor(prefixColor)
+          .fontWeight(baseWeight)
+      }
+      if (line.spans.length === 0) {
+        Span(' ')
+          .fontSize(fontSize)
+          .fontColor(baseColor)
+          .fontWeight(baseWeight)
+      }
+      ForEach(line.spans, (span: MarkdownInlineSpan) => {
+        Span(span.text)
+          .fontSize(fontSize)
+          .fontColor(span.link.length > 0 ? this.linkColor() : baseColor)
+          .fontWeight(span.bold ? FontWeight.Bold : baseWeight)
+          .fontStyle(span.italic ? FontStyle.Italic : FontStyle.Normal)
+          .decoration({
+            type: span.strike ? TextDecorationType.LineThrough :
+              ((span.underline || span.link.length > 0) ? TextDecorationType.Underline : TextDecorationType.None),
+            color: span.link.length > 0 ? this.linkColor() : baseColor
+          })
+          .textBackgroundStyle({
+            color: span.code ? this.inputColor() : '#00000000',
+            radius: span.code ? 3 : 0
+          })
+          .fontFamily(span.code ? 'monospace' : 'HarmonyOS Sans')
+          .onClick((): void => {
+            if (span.link.length > 0) {
+              this.openMarkdownLink(span.link);
+            }
+          })
+      }, (span: MarkdownInlineSpan): string => line.id + ':' + span.id)
+    }
+    .width('100%')
+    .fontSize(fontSize)
+    .fontColor(baseColor)
+    .fontWeight(baseWeight)
   }
 
   @Builder
@@ -1853,7 +1938,7 @@ struct PaperDesktop {
         }
         .layoutWeight(1)
         .width('100%')
-        .onClick((): void => this.toggleNoteBrowse())
+        .onClick((): void => this.activateNotePreview())
       } else {
         Scroll() {
           Column({ space: 3 }) {
@@ -1861,28 +1946,43 @@ struct PaperDesktop {
               if (line.kind === MD_KIND_RULE) {
                 Divider().color(this.paperBorderColor()).margin({ top: 6, bottom: 6 })
               } else if (line.kind === MD_KIND_HEADING) {
-                Text(line.text)
-                  .width('100%')
-                  .fontSize(this.headingSize(line.level))
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor(this.textColor())
+                this.MarkdownInlineLine(
+                  line,
+                  this.headingSize(line.level),
+                  this.textColor(),
+                  FontWeight.Medium,
+                  '',
+                  this.textColor()
+                )
               } else if (line.kind === MD_KIND_QUOTE) {
-                Text('│ ' + line.text)
-                  .width('100%')
-                  .fontSize(this.noteFontSize(14))
-                  .fontColor(this.mutedColor())
+                this.MarkdownInlineLine(
+                  line,
+                  this.noteFontSize(14),
+                  this.mutedColor(),
+                  FontWeight.Normal,
+                  '│ ',
+                  this.quoteBorderColor()
+                )
               } else if (line.kind === MD_KIND_CODE) {
-                Text(line.text)
-                  .width('100%')
-                  .fontSize(this.noteFontSize(13))
-                  .fontColor(this.textColor())
+                this.MarkdownInlineLine(
+                  line,
+                  this.noteFontSize(13),
+                  this.textColor(),
+                  FontWeight.Normal,
+                  '',
+                  this.textColor()
+                )
                   .backgroundColor(this.inputColor())
                   .padding(6)
               } else {
-                Text(line.text.length > 0 ? line.text : ' ')
-                  .width('100%')
-                  .fontSize(this.noteFontSize(14))
-                  .fontColor(this.textColor())
+                this.MarkdownInlineLine(
+                  line,
+                  this.noteFontSize(14),
+                  this.textColor(),
+                  FontWeight.Normal,
+                  '',
+                  this.textColor()
+                )
               }
             }, (line: MarkdownLine): string => line.id)
           }
@@ -1892,7 +1992,7 @@ struct PaperDesktop {
         }
         .layoutWeight(1)
         .width('100%')
-        .onClick((): void => this.toggleNoteBrowse())
+        .onClick((): void => this.activateNotePreview())
       }
     }
     .layoutWeight(1)
