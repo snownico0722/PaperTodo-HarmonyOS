@@ -43,20 +43,20 @@ struct StatusBarPage {
     emitter.emit(event, data);
   }
 
-  private paperTitle(paper: PaperData): string {
+  private paperTitle(paper: PaperData): ResourceStr {
     if (paper.title.trim().length > 0) {
       return paper.title.trim();
     }
     if (paper.type === PAPER_TYPE_NOTE) {
       const firstLine: string = paper.content.split('\n')[0].trim();
-      return firstLine.length > 0 ? firstLine.slice(0, 24) : '未命名笔记';
+      return firstLine.length > 0 ? firstLine.slice(0, 24) : $r('app.string.untitled_note');
     }
     for (let i: number = 0; i < paper.items.length; i++) {
       if (paper.items[i].text.trim().length > 0) {
         return paper.items[i].text.trim().slice(0, 24);
       }
     }
-    return '未命名待办';
+    return $r('app.string.untitled_todo');
   }
 
   build() {
@@ -66,7 +66,7 @@ struct StatusBarPage {
           .fontSize(16)
           .fontWeight(FontWeight.Medium)
         Blank()
-        Button('管理')
+        Button($r('app.string.manage'))
           .height(28)
           .fontSize(10)
           .onClick((): void => this.emit(STATUS_EVENT_OPEN_MANAGER))
@@ -74,12 +74,12 @@ struct StatusBarPage {
       .width('100%')
 
       Row({ space: 8 }) {
-        Button('☑ 新建待办')
+        Button($r('app.string.new_todo'))
           .layoutWeight(1)
           .height(34)
           .fontSize(11)
           .onClick((): void => this.emit(STATUS_EVENT_NEW_TODO))
-        Button('✎ 新建笔记')
+        Button($r('app.string.new_note'))
           .layoutWeight(1)
           .height(34)
           .fontSize(11)
@@ -88,12 +88,12 @@ struct StatusBarPage {
       .width('100%')
 
       Row({ space: 8 }) {
-        Button('显示全部')
+        Button($r('app.string.show_all'))
           .layoutWeight(1)
           .height(30)
           .fontSize(10)
           .onClick((): void => this.emit(STATUS_EVENT_SHOW_ALL))
-        Button('隐藏全部')
+        Button($r('app.string.hide_all'))
           .layoutWeight(1)
           .height(30)
           .fontSize(10)
@@ -104,7 +104,7 @@ struct StatusBarPage {
       Divider().opacity(0.45)
 
       if (this.papers.length === 0) {
-        Text('还没有纸片')
+        Text($r('app.string.no_papers'))
           .width('100%')
           .height(76)
           .fontSize(11)
