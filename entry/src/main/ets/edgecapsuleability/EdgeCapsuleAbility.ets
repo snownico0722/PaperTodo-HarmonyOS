@@ -10,7 +10,6 @@ import { display, window } from '@kit.ArkUI';
 import { capsuleSlotTop, normalizeCapsuleStartTopMargin } from '../common/CapsuleLayout';
 import { DesktopShell } from '../common/DesktopShell';
 import {
-  CAPSULE_CLOSE_WIDTH,
   CAPSULE_HEIGHT,
   CAPSULE_MAX_WIDTH,
   CAPSULE_MIN_WIDTH,
@@ -184,12 +183,10 @@ export default class EdgeCapsuleAbility extends UIAbility {
     const widthVp: number = Math.max(CAPSULE_MIN_WIDTH, Math.min(CAPSULE_MAX_WIDTH, paper.capsuleWidth));
     const widthPx: number = Math.round(uiContext.vp2px(widthVp));
     const heightPx: number = Math.round(uiContext.vp2px(CAPSULE_HEIGHT));
-    let visibleWidthVp: number = paper.isCollapsed ? widthVp - CAPSULE_CLOSE_WIDTH : widthVp;
-    if (state.capsuleCollapseAllActive) {
-      visibleWidthVp = 0;
-    }
-    visibleWidthVp = Math.max(0, visibleWidthVp);
-    const targetX: number = area.left + area.width - Math.round(uiContext.vp2px(visibleWidthVp));
+    // HarmonyOS PC may clamp a floating top-level window that extends beyond
+    // the available desktop. Keep the native host fully on-screen; EdgeCapsule
+    // performs the visual hide/reveal inside this clipped window instead.
+    const targetX: number = area.left + area.width - widthPx;
     const targetY: number = area.top + Math.round(uiContext.vp2px(slotTop));
 
     try {

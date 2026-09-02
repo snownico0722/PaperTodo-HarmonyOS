@@ -168,14 +168,10 @@ struct EdgeCapsule {
     }
     const widthPx: number = Math.round(uiContext.vp2px(widthVp));
     const heightPx: number = Math.round(uiContext.vp2px(CAPSULE_HEIGHT));
-    let visibleWidthVp: number = widthVp;
-    if (state.capsuleCollapseAllActive) {
-      visibleWidthVp = 0;
-    } else if (this.hideEdgeCapsuleCloseButtonOnHover ||
-      (!this.isPointerSessionActive() && latest.isCollapsed)) {
-      visibleWidthVp = Math.max(1, widthVp - CAPSULE_CLOSE_WIDTH);
-    }
-    const targetX: number = area.left + area.width - Math.round(uiContext.vp2px(visibleWidthVp));
+    // The native window itself always stays flush with and fully inside the
+    // right edge. Visual retraction is an ArkUI translation below, not an
+    // out-of-bounds moveWindowTo() request that the PC window manager can clamp.
+    const targetX: number = area.left + area.width - widthPx;
     const targetY: number = area.top + Math.round(uiContext.vp2px(targetTop));
 
     try {
@@ -229,16 +225,14 @@ struct EdgeCapsule {
   private moveWindow(win: window.Window, targetX: number, targetY: number,
     animate: boolean, duration: number): void {
     this.cancelWindowMotion();
-    let startX: number = targetX;
     let startY: number = targetY;
     try {
       const rect: window.Rect = win.getWindowProperties().windowRect;
-      startX = rect.left;
       startY = rect.top;
     } catch (error) {
       console.warn('read edge capsule position failed: ' + String(error));
     }
-    if (!animate || duration <= 0 || (startX === targetX && startY === targetY)) {
+    if (!animate || duration <= 0 || startY === targetY) {
       win.moveWindowTo(targetX, targetY).catch((error: BusinessError): void => {
         console.error('move edge capsule failed: ' + error.message);
       });
@@ -252,10 +246,12 @@ struct EdgeCapsule {
       }
       const progress: number = Math.min(1, Math.max(0, (Date.now() - startedAt) / duration));
       const eased: number = 1 - Math.pow(1 - progress, 3);
-      const x: number = Math.round(startX + (targetX - startX) * eased);
       const y: number = Math.round(startY + (targetY - startY) * eased);
       try {
-        await win.moveWindowTo(x, y);
+        // Horizontal motion is deliberately forbidden here. Repeated native
+        // X moves fought the HarmonyOS PC window manager and produced the
+        // visible edge/inset ping-pong seen on hardware.
+        await win.moveWindowTo(targetX, y);
       } catch (error) {
         console.error('animate edge capsule failed: ' + String(error));
         return;
@@ -538,6 +534,18 @@ struct EdgeCapsule {
     return this.capsuleTextBold ? FontWeight.Bold : FontWeight.Normal;
   }
 
+  private contentOffsetX(): number {
+    if (this.capsuleCollapseAllActive) {
+      const width: number = this.paper === null ? CAPSULE_MAX_WIDTH : this.paper.capsuleWidth;
+      return Math.max(CAPSULE_MIN_WIDTH, Math.min(CAPSULE_MAX_WIDTH, width));
+    }
+    if (this.hideEdgeCapsuleCloseButtonOnHover ||
+      (!this.isPointerSessionActive() && this.isCollapsed)) {
+      return CAPSULE_CLOSE_WIDTH;
+    }
+    return 0;
+  }
+
   @Builder
   private CapsuleContextMenu() {
     Menu() {
@@ -602,6 +610,11 @@ struct EdgeCapsule {
       }
       .width('100%')
       .height(30)
+      .translate({ x: this.contentOffsetX() })
+      .animation({
+        duration: this.enableAnimations ? (this.isPointerSessionActive() ? 130 : 170) : 0,
+        curve: Curve.EaseOut
+      })
       .backgroundColor(this.palette().paper)
       .border({ width: 1, color: this.isCollapsed ? this.palette().border : this.palette().accent })
       .borderRadius({ topLeft: 15, bottomLeft: 15, topRight: 0, bottomRight: 0 })
@@ -609,6 +622,7 @@ struct EdgeCapsule {
     }
     .width('100%')
     .height('100%')
+    .clip(true)
     .opacity(this.capsuleCollapseAllActive ? 0 : 1)
     .backgroundColor(Color.Transparent)
     .padding({ top: 8, bottom: 8 })
