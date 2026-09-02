@@ -3437,15 +3437,18 @@ struct Paper {
       if (this.showTopBarActionGroup()) {
         Row({ space: 2 }) {
           if (this.enablePaperLinks) {
-            Text(this.isPaperLinked() ? '⦿' : '⌖')
+            Stack({ alignContent: Alignment.Center }) {
+              Text(this.isPaperLinked() ? '⦿' : '⌖')
+                .fontSize(13)
+                .fontColor(this.textColor())
+                .textAlign(TextAlign.Center)
+            }
+              .id('paper_link_drag_handle')
               .width(26)
               .height(30)
-              .fontSize(13)
-              .fontColor(this.textColor())
-              .textAlign(TextAlign.Center)
               .accessibilityText(this.text('link.to'))
-              .copyOption(CopyOptions.LocalDevice)
               .draggable(true)
+              .dragPreview('paper_link_drag_handle')
               .onDragStart((event: DragEvent): DragItemInfo => this.beginPaperLinkDrag(event))
           }
 
