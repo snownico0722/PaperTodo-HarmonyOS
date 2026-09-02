@@ -1,18 +1,28 @@
-import { AbilityConstant, Configuration, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
+import {
+  AbilityConstant,
+  Configuration,
+  ConfigurationConstant,
+  StartOptions,
+  UIAbility,
+  Want
+} from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { display, window } from '@kit.ArkUI';
 import { PaperStore } from '../common/PaperStore';
 
 export default class ManagerAbility extends UIAbility {
   private mainWindow: window.Window | null = null;
+  private runtimeStartInFlight: boolean = false;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     PaperStore.initialize(this.context);
     AppStorage.setOrCreate<number>('systemColorMode', this.context.config.colorMode ??
       ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT);
+    this.ensureRuntimeHost();
   }
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    this.ensureRuntimeHost();
     this.showAndRestyle();
   }
 
@@ -31,7 +41,8 @@ export default class ManagerAbility extends UIAbility {
   }
 
   onForeground(): void {
-    this.applyWindowStyle();
+    this.ensureRuntimeHost();
+    this.showAndRestyle();
   }
 
   onConfigurationUpdate(config: Configuration): void {
@@ -53,6 +64,25 @@ export default class ManagerAbility extends UIAbility {
   async onPrepareToTerminateAsync(): Promise<boolean> {
     PaperStore.flushNow();
     return false;
+  }
+
+  private ensureRuntimeHost(): void {
+    if (this.runtimeStartInFlight) {
+      return;
+    }
+    this.runtimeStartInFlight = true;
+    const want: Want = {
+      bundleName: 'com.papertodo.app',
+      moduleName: 'entry',
+      abilityName: 'EntryAbility'
+    };
+    const options: StartOptions = { hideStartWindow: true };
+    this.context.startAbility(want, options).then((): void => {
+      this.runtimeStartInFlight = false;
+    }).catch((error: BusinessError): void => {
+      this.runtimeStartInFlight = false;
+      console.error('start PaperTodo runtime host failed: ' + error.message);
+    });
   }
 
   private showAndRestyle(): void {
@@ -111,9 +141,17 @@ export default class ManagerAbility extends UIAbility {
     const heightVp: number = Math.min(660, Math.max(500, uiContext.px2vp(availableHeight) - 48));
     const widthPx: number = Math.round(uiContext.vp2px(widthVp));
     const heightPx: number = Math.round(uiContext.vp2px(heightVp));
-    await win.resize(widthPx, heightPx);
-    await win.moveWindowTo(Math.max(0, Math.round((availableWidth - widthPx) / 2)),
-      Math.max(0, Math.round((availableHeight - heightPx) / 2)));
+    try {
+      await win.resizeAsync(widthPx, heightPx);
+      await win.moveWindowToAsync(Math.max(0, Math.round((availableWidth - widthPx) / 2)),
+        Math.max(0, Math.round((availableHeight - heightPx) / 2)));
+    } catch (error) {
+      console.warn('async settings geometry failed, falling back: ' + String(error));
+      await win.resize(widthPx, heightPx);
+      await win.moveWindowTo(Math.max(0, Math.round((availableWidth - widthPx) / 2)),
+        Math.max(0, Math.round((availableHeight - heightPx) / 2)));
+    }
     this.applyWindowStyle();
+    await win.showWindow();
   }
 }

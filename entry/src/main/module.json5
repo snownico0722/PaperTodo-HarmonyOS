@@ -3,7 +3,7 @@
     "name": "entry",
     "type": "entry",
     "description": "$string:module_desc",
-    "mainElement": "EntryAbility",
+    "mainElement": "ManagerAbility",
     "srcEntry": "./ets/abilitystage/PaperTodoAbilityStage.ets",
     "deviceTypes": [
       "2in1"
@@ -41,17 +41,7 @@
         ],
         "excludeFromDock": true,
         "removeMissionAfterTerminate": true,
-        "exported": true,
-        "skills": [
-          {
-            "entities": [
-              "entity.system.home"
-            ],
-            "actions": [
-              "ohos.want.action.home"
-            ]
-          }
-        ]
+        "exported": false
       },
       {
         "name": "ManagerAbility",
@@ -66,9 +56,19 @@
         "supportWindowMode": [
           "floating"
         ],
-        "excludeFromDock": true,
-        "removeMissionAfterTerminate": true,
-        "exported": false
+        "excludeFromDock": false,
+        "removeMissionAfterTerminate": false,
+        "exported": true,
+        "skills": [
+          {
+            "entities": [
+              "entity.system.home"
+            ],
+            "actions": [
+              "ohos.want.action.home"
+            ]
+          }
+        ]
       },
       {
         "name": "TrayResidentAbility",

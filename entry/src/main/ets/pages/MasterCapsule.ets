@@ -30,14 +30,17 @@ import {
 import { formatText, tForSystem } from '../common/Strings';
 import { ThemePalette, resolvePalette } from '../common/ThemePalette';
 
-const MASTER_ROW_WIDTH: number = 200;
+const MASTER_ROW_INITIAL_WIDTH: number = 96;
+const MASTER_ROW_MIN_WIDTH: number = 64;
+const MASTER_ROW_MAX_WIDTH: number = 144;
 
 @Entry({ useSharedStorage: true })
 @Component
 struct MasterCapsule {
   @StorageLink('paperRevision') @Watch('onStoreChanged') paperRevision: number = 0;
   @StorageLink('capsuleAreaRevision') @Watch('onLayoutChanged') capsuleAreaRevision: number = 0;
-  @StorageLink('capsuleCollapseAllActive') capsuleCollapseAllActive: boolean = false;
+  @StorageLink('capsuleCollapseAllActive') @Watch('onLayoutChanged')
+  capsuleCollapseAllActive: boolean = false;
   @StorageLink('capsuleStartTop') @Watch('onLayoutChanged') capsuleStartTop: number = 48;
   @StorageLink('capsuleGap') @Watch('onLayoutChanged') capsuleGap: number = 4;
   @StorageLink('useCapsuleMode') @Watch('onStoreChanged') useCapsuleMode: boolean = true;
@@ -61,6 +64,7 @@ struct MasterCapsule {
   @State members: PaperData[] = [];
   @State hoveredPaperId: string = '';
   @State masterHovered: boolean = false;
+  @State masterRowWidthVp: number = MASTER_ROW_INITIAL_WIDTH;
 
   private layoutRunning: boolean = false;
   private layoutPending: boolean = false;
@@ -149,6 +153,7 @@ struct MasterCapsule {
 
     const state: AppState = PaperStore.loadState();
     const includeMaster: boolean = state.useMasterCapsule;
+    const queueRetracted: boolean = includeMaster && state.capsuleCollapseAllActive;
     const areaHeightVp: number = uiContext.px2vp(area.height);
     this.availableHeightVp = areaHeightVp;
     const normalizedTop: number = normalizeCapsuleStartTopMargin(state.capsuleStartTop, areaHeightVp,
@@ -156,9 +161,15 @@ struct MasterCapsule {
     if (Math.abs(normalizedTop - state.capsuleStartTop) > 0.1) {
       PaperStore.setCapsuleStartTop(normalizedTop);
     }
-    const widthVp: number = this.hostWidthVp(includeMaster);
-    const slotCount: number = this.members.length + (includeMaster ? 1 : 0);
-    const heightVp: number = slotCount * CAPSULE_HEIGHT + Math.max(0, slotCount - 1) * state.capsuleGap;
+    const measuredMasterWidth: number = this.measureMasterRowWidth(uiContext);
+    if (Math.abs(measuredMasterWidth - this.masterRowWidthVp) > 0.1) {
+      this.masterRowWidthVp = measuredMasterWidth;
+    }
+    const widthVp: number = this.hostWidthVp(includeMaster, queueRetracted);
+    const visibleMemberCount: number = queueRetracted ? 0 : this.members.length;
+    const slotCount: number = visibleMemberCount + (includeMaster ? 1 : 0);
+    const heightVp: number = Math.max(CAPSULE_HEIGHT,
+      slotCount * CAPSULE_HEIGHT + Math.max(0, slotCount - 1) * state.capsuleGap);
     const widthPx: number = Math.round(uiContext.vp2px(widthVp));
     const heightPx: number = Math.round(uiContext.vp2px(heightVp));
     const xPx: number = Math.round(area.left + area.width - widthPx);
@@ -189,8 +200,28 @@ struct MasterCapsule {
     this.lastGeometrySignature = signature;
   }
 
-  private hostWidthVp(includeMaster: boolean = this.useMasterCapsule): number {
-    let width: number = includeMaster ? MASTER_ROW_WIDTH : CAPSULE_MIN_WIDTH;
+  private measureMasterRowWidth(uiContext: UIContext): number {
+    const label: string = this.currentMasterLabel();
+    let labelWidth: number = label.length * this.fontSize();
+    try {
+      labelWidth = uiContext.px2vp(uiContext.getMeasureUtils().measureText({
+        textContent: label,
+        fontSize: this.fontSize(),
+        fontWeight: this.capsuleTextBold ? FontWeight.Bold : FontWeight.Medium
+      }));
+    } catch (error) {
+      console.warn('measure master capsule label failed: ' + String(error));
+    }
+    const desired: number = Math.ceil(7 + 12 + 4 + labelWidth + 7 + 2);
+    return Math.max(MASTER_ROW_MIN_WIDTH, Math.min(MASTER_ROW_MAX_WIDTH, desired));
+  }
+
+  private hostWidthVp(includeMaster: boolean = this.useMasterCapsule,
+    queueRetracted: boolean = includeMaster && this.capsuleCollapseAllActive): number {
+    if (includeMaster && queueRetracted) {
+      return this.masterRowWidthVp;
+    }
+    let width: number = includeMaster ? this.masterRowWidthVp : CAPSULE_MIN_WIDTH;
     for (let i: number = 0; i < this.members.length; i++) {
       width = Math.max(width, this.capsuleWidth(this.members[i]));
     }
@@ -396,9 +427,6 @@ struct MasterCapsule {
 
   private capsuleOffsetX(paper: PaperData): number {
     const width: number = this.capsuleWidth(paper);
-    if (this.capsuleCollapseAllActive) {
-      return width;
-    }
     if (this.hideEdgeCapsuleCloseButtonOnHover ||
       (this.hoveredPaperId !== paper.id && paper.isCollapsed)) {
       return CAPSULE_CLOSE_WIDTH;
@@ -459,7 +487,7 @@ struct MasterCapsule {
           .fontWeight(this.capsuleTextBold ? FontWeight.Bold : FontWeight.Medium)
           .fontColor(this.palette().muted)
       }
-      .width(MASTER_ROW_WIDTH)
+      .width(this.masterRowWidthVp)
       .height(30)
       .padding({ left: 7, right: 7 })
       .backgroundColor(this.masterHovered ? this.palette().input : this.palette().paper)
@@ -522,7 +550,6 @@ struct MasterCapsule {
       .width(this.capsuleWidth(paper))
       .height(30)
       .translate({ x: this.capsuleOffsetX(paper) })
-      .opacity(this.capsuleCollapseAllActive ? 0 : 1)
       .animation({ duration: this.enableAnimations ? 150 : 0, curve: Curve.EaseOut })
       .backgroundColor(this.palette().paper)
       .border({ width: 1, color: paper.isCollapsed ? this.palette().border : this.palette().accent })
@@ -549,9 +576,11 @@ struct MasterCapsule {
       if (this.useMasterCapsule) {
         this.MasterRow()
       }
-      ForEach(this.members, (paper: PaperData) => {
-        this.CapsuleRow(paper)
-      }, (paper: PaperData): string => paper.id)
+      if (!this.capsuleCollapseAllActive) {
+        ForEach(this.members, (paper: PaperData) => {
+          this.CapsuleRow(paper)
+        }, (paper: PaperData): string => paper.id)
+      }
     }
     .width('100%')
     .height('100%')

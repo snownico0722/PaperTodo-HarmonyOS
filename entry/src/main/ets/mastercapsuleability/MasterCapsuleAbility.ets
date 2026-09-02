@@ -18,7 +18,7 @@ import {
 } from '../common/Models';
 import { PaperStore } from '../common/PaperStore';
 
-const MASTER_ROW_WIDTH: number = 200;
+const INITIAL_MASTER_ROW_WIDTH: number = 96;
 const INITIAL_INTERACTION_RESTORE_DELAY_MS: number = 16;
 
 export default class MasterCapsuleAbility extends UIAbility {
@@ -155,7 +155,11 @@ export default class MasterCapsuleAbility extends UIAbility {
         this.terminateAbility();
         return;
       }
+      // setWindowContainerColor is only reliable after UI content has been loaded.
+      // Re-apply the transparent native surface here so an earlier unsupported
+      // decoration call can never leave the platform default gray background.
       this.applyWindowStyle();
+      this.applyTransparentSurfaceStyle();
       this.notifyAvailableAreaChanged();
       setTimeout((): void => {
         this.restoreInitialWindowInteraction().catch((restoreError: Error): void => {
@@ -179,12 +183,15 @@ export default class MasterCapsuleAbility extends UIAbility {
       return;
     }
     const includeMaster: boolean = state.useMasterCapsule;
+    const queueRetracted: boolean = includeMaster && state.capsuleCollapseAllActive;
     const areaHeightVp: number = uiContext.px2vp(area.height);
     const startTop: number = normalizeCapsuleStartTopMargin(state.capsuleStartTop, areaHeightVp,
       members.length, state.capsuleGap, includeMaster);
-    const widthVp: number = this.hostWidthVp(members, includeMaster);
-    const slotCount: number = members.length + (includeMaster ? 1 : 0);
-    const heightVp: number = slotCount * CAPSULE_HEIGHT + Math.max(0, slotCount - 1) * state.capsuleGap;
+    const widthVp: number = this.hostWidthVp(members, includeMaster, queueRetracted);
+    const visibleMemberCount: number = queueRetracted ? 0 : members.length;
+    const slotCount: number = visibleMemberCount + (includeMaster ? 1 : 0);
+    const heightVp: number = Math.max(CAPSULE_HEIGHT,
+      slotCount * CAPSULE_HEIGHT + Math.max(0, slotCount - 1) * state.capsuleGap);
     const widthPx: number = Math.round(uiContext.vp2px(widthVp));
     const heightPx: number = Math.round(uiContext.vp2px(heightVp));
     const xPx: number = Math.round(area.left + area.width - widthPx);
@@ -210,14 +217,21 @@ export default class MasterCapsuleAbility extends UIAbility {
     }
     try {
       await win.setWindowShadowEnabled(false);
+    } catch (error) {
+      console.warn('disable initial capsule host shadow failed: ' + String(error));
+    }
+    try {
       await win.setWindowTopmost(true);
     } catch (error) {
-      console.warn('set initial capsule host window state failed: ' + String(error));
+      console.warn('set initial capsule host topmost failed: ' + String(error));
     }
   }
 
-  private hostWidthVp(members: PaperData[], includeMaster: boolean): number {
-    let width: number = includeMaster ? MASTER_ROW_WIDTH : CAPSULE_MIN_WIDTH;
+  private hostWidthVp(members: PaperData[], includeMaster: boolean, queueRetracted: boolean): number {
+    if (includeMaster && queueRetracted) {
+      return INITIAL_MASTER_ROW_WIDTH;
+    }
+    let width: number = includeMaster ? INITIAL_MASTER_ROW_WIDTH : CAPSULE_MIN_WIDTH;
     for (let i: number = 0; i < members.length; i++) {
       width = Math.max(width,
         Math.max(CAPSULE_MIN_WIDTH, Math.min(CAPSULE_MAX_WIDTH, members[i].capsuleWidth)));
@@ -356,10 +370,30 @@ export default class MasterCapsuleAbility extends UIAbility {
       return;
     }
     win.restore().catch((_restoreError: BusinessError): Promise<void> => win.showWindow())
-      .then((): void => this.applyWindowStyle())
+      .then((): void => {
+        this.applyWindowStyle();
+        this.applyTransparentSurfaceStyle();
+      })
       .catch((error: BusinessError): void => {
         console.error('show capsule host failed: ' + error.message);
       });
+  }
+
+  private applyTransparentSurfaceStyle(): void {
+    const win: window.Window | null = this.mainWindow;
+    if (win === null) {
+      return;
+    }
+    try {
+      win.setWindowBackgroundColor('#00000000');
+    } catch (error) {
+      console.warn('clear capsule host background failed: ' + String(error));
+    }
+    try {
+      win.setWindowContainerColor('#00000000', '#00000000');
+    } catch (error) {
+      console.warn('clear capsule host container failed: ' + String(error));
+    }
   }
 
   private applyWindowStyle(): void {
@@ -369,14 +403,25 @@ export default class MasterCapsuleAbility extends UIAbility {
     }
     try {
       win.setWindowDecorVisible(false);
-      win.setWindowTitleButtonVisible(false, false, false);
-      win.setWindowTitleMoveEnabled(false);
-      win.setResizeByDragEnabled(false);
-      win.setWindowBackgroundColor('#00000000');
-      win.setWindowContainerColor('#00000000', '#00000000');
     } catch (error) {
-      console.warn('configure capsule host style failed: ' + String(error));
+      console.warn('hide capsule host decor failed: ' + String(error));
     }
+    try {
+      win.setWindowTitleButtonVisible(false, false, false);
+    } catch (error) {
+      console.warn('hide capsule host title buttons failed: ' + String(error));
+    }
+    try {
+      win.setWindowTitleMoveEnabled(false);
+    } catch (error) {
+      console.warn('disable capsule host title move failed: ' + String(error));
+    }
+    try {
+      win.setResizeByDragEnabled(false);
+    } catch (error) {
+      console.warn('disable capsule host resize drag failed: ' + String(error));
+    }
+    this.applyTransparentSurfaceStyle();
     win.setWindowShadowEnabled(false).catch((error: BusinessError): void => {
       console.warn('disable capsule host shadow failed: ' + error.message);
     });
