@@ -7,7 +7,6 @@ import {
   CAPSULE_HEIGHT,
   CAPSULE_MAX_WIDTH,
   CAPSULE_MIN_WIDTH,
-  CAPSULE_PLATFORM_MIN_WIDTH,
   PAPER_TYPE_NOTE,
   PAPER_TYPE_TODO,
   THEME_DARK,
@@ -171,34 +170,39 @@ struct MasterCapsule {
     const slotCount: number = visibleMemberCount + (includeMaster ? 1 : 0);
     const heightVp: number = Math.max(CAPSULE_HEIGHT,
       slotCount * CAPSULE_HEIGHT + Math.max(0, slotCount - 1) * state.capsuleGap);
-    const widthPx: number = Math.round(uiContext.vp2px(widthVp));
-    const heightPx: number = Math.round(uiContext.vp2px(heightVp));
-    const xPx: number = Math.round(targetDisplay.width - widthPx);
-    const yPx: number = Math.round(area.top + uiContext.vp2px(normalizedTop));
-    const signature: string = [xPx, yPx, widthPx, heightPx].join(':');
-    const geometryChanged: boolean = signature !== this.lastGeometrySignature;
+    const requestedWidthPx: number = Math.round(uiContext.vp2px(widthVp));
+    const requestedHeightPx: number = Math.round(uiContext.vp2px(heightVp));
+    const desiredSignature: string = [normalizedTop, requestedWidthPx, requestedHeightPx].join(':');
+    const geometryChanged: boolean = desiredSignature !== this.lastGeometrySignature;
     if (geometryChanged) {
       try {
-        await win.setWindowLimits({
-          minWidth: Math.round(uiContext.vp2px(CAPSULE_PLATFORM_MIN_WIDTH)),
-          minHeight: Math.round(uiContext.vp2px(CAPSULE_HEIGHT)),
-          maxWidth: Math.max(widthPx, targetDisplay.width),
-          maxHeight: Math.max(heightPx, area.height)
-        }, true);
+        await win.resizeAsync(requestedWidthPx, requestedHeightPx);
       } catch (error) {
-        console.warn('set capsule host limits failed: ' + String(error));
+        console.warn('async capsule subwindow resize failed, falling back: ' + String(error));
+        await win.resize(requestedWidthPx, requestedHeightPx);
       }
-      try {
-        await win.resizeAsync(widthPx, heightPx);
-        await win.moveWindowToAsync(xPx, yPx);
-      } catch (error) {
-        console.warn('async capsule host geometry failed, falling back: ' + String(error));
-        await win.resize(widthPx, heightPx);
-        await win.moveWindowTo(xPx, yPx);
-      }
-      this.lastGeometrySignature = signature;
+      this.lastGeometrySignature = desiredSignature;
     }
-    await this.syncNativeWindowMask(win, uiContext, widthPx, heightPx, state, includeMaster, queueRetracted);
+
+    let actualWidthPx: number = requestedWidthPx;
+    let actualHeightPx: number = requestedHeightPx;
+    try {
+      const rect = win.getWindowProperties().windowRect;
+      actualWidthPx = Math.max(1, rect.width);
+      actualHeightPx = Math.max(1, rect.height);
+    } catch (error) {
+      console.warn('query capsule subwindow actual geometry failed: ' + String(error));
+    }
+    const xPx: number = Math.round(targetDisplay.width - actualWidthPx);
+    const yPx: number = Math.round(area.top + uiContext.vp2px(normalizedTop));
+    try {
+      await win.moveWindowToAsync(xPx, yPx);
+    } catch (error) {
+      console.warn('async capsule subwindow edge move failed, falling back: ' + String(error));
+      await win.moveWindowTo(xPx, yPx);
+    }
+    await this.syncNativeWindowMask(win, uiContext, actualWidthPx, actualHeightPx,
+      state, includeMaster, queueRetracted);
   }
 
   private measureMasterRowWidth(uiContext: UIContext): number {

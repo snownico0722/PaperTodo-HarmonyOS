@@ -12,7 +12,6 @@ import {
   CAPSULE_HEIGHT,
   CAPSULE_MAX_WIDTH,
   CAPSULE_MIN_WIDTH,
-  CAPSULE_PLATFORM_MIN_WIDTH,
   AppState,
   PaperData
 } from '../common/Models';
@@ -20,8 +19,10 @@ import { PaperStore } from '../common/PaperStore';
 
 const INITIAL_MASTER_ROW_WIDTH: number = 96;
 const INITIAL_INTERACTION_RESTORE_DELAY_MS: number = 16;
+const CAPSULE_SUBWINDOW_NAME: string = 'PaperTodoCapsuleSubWindow';
 
 export default class MasterCapsuleAbility extends UIAbility {
+  private hostWindow: window.Window | null = null;
   private mainWindow: window.Window | null = null;
   private windowStage: window.WindowStage | null = null;
   private activeDisplay: display.Display | null = null;
@@ -77,29 +78,36 @@ export default class MasterCapsuleAbility extends UIAbility {
     }
 
     try {
-      this.mainWindow = windowStage.getMainWindowSync();
+      this.hostWindow = windowStage.getMainWindowSync();
     } catch (error) {
-      console.error('get capsule host window failed: ' + String(error));
+      console.error('get capsule ability host window failed: ' + String(error));
       this.terminateAbility();
       return;
     }
-    AppStorage.setOrCreate<window.Window>('masterCapsuleWindow', this.mainWindow);
-    AppStorage.setOrCreate<string>('masterCapsuleToken', this.instanceToken);
-    AppStorage.setOrCreate<boolean>('masterCapsuleOpen', true);
     AppStorage.setOrCreate<number>('capsuleAreaRevision',
       AppStorage.get<number>('capsuleAreaRevision') ?? 0);
-    this.applyWindowStyle();
-    this.registerCloseEvents(windowStage);
     this.registerAvailableAreaListener();
 
-    this.prepareInitialWindowAndLoadContent(windowStage).catch((error: Error): void => {
-      console.warn('prepare initial capsule host failed: ' + error.message);
-      this.loadCapsuleHostContent(windowStage);
+    windowStage.loadContent('pages/Host', (error: BusinessError): void => {
+      if (error.code !== 0) {
+        console.error('load capsule ability host page failed: ' + error.message);
+        this.terminateAbility();
+        return;
+      }
+      this.configureHiddenHostWindow().then((): Promise<void> => {
+        return this.createCapsuleSubWindow(windowStage);
+      }).catch((reason: Error): void => {
+        console.error('create capsule subwindow failed: ' + reason.message);
+        this.terminateAbility();
+      });
     });
   }
 
   onForeground(): void {
-    this.applyWindowStyle();
+    this.configureHiddenHostWindow().catch((error: Error): void => {
+      console.warn('re-hide capsule ability host failed: ' + error.message);
+    });
+    this.showAndRestyle();
     this.notifyAvailableAreaChanged();
   }
 
@@ -119,7 +127,16 @@ export default class MasterCapsuleAbility extends UIAbility {
     PaperStore.flushNow();
     this.unregisterCloseEvents();
     this.unregisterAvailableAreaListener();
+    const capsuleWindow: window.Window | null = this.mainWindow;
     this.mainWindow = null;
+    if (capsuleWindow !== null) {
+      try {
+        capsuleWindow.destroyWindow();
+      } catch (error) {
+        console.warn('destroy capsule subwindow failed: ' + String(error));
+      }
+    }
+    this.hostWindow = null;
     this.windowStage = null;
     if (AppStorage.get<string>('masterCapsuleToken') === this.instanceToken) {
       this.clearHostRegistration();
@@ -131,42 +148,122 @@ export default class MasterCapsuleAbility extends UIAbility {
     return false;
   }
 
-  private async prepareInitialWindowAndLoadContent(windowStage: window.WindowStage): Promise<void> {
-    const win: window.Window | null = this.mainWindow;
+  private async configureHiddenHostWindow(): Promise<void> {
+    const win: window.Window | null = this.hostWindow;
     if (win === null) {
       return;
     }
-    await this.setInitialWindowInteraction(false);
-    await this.prepareInitialGeometry();
-    this.applyWindowStyle();
-    if (this.windowStage !== windowStage || this.mainWindow !== win || this.closeRequested) {
-      return;
+    try {
+      win.setWindowDecorVisible(false);
+    } catch (error) {
+      console.warn('hide capsule ability host decor failed: ' + String(error));
     }
-    this.loadCapsuleHostContent(windowStage);
+    try {
+      win.setWindowTitleButtonVisible(false, false, false);
+      win.setWindowTitleMoveEnabled(false);
+    } catch (error) {
+      console.warn('hide capsule ability host title controls failed: ' + String(error));
+    }
+    try {
+      win.setWindowBackgroundColor('#00000000');
+      win.setWindowContainerColor('#00000000', '#00000000');
+    } catch (error) {
+      console.warn('clear capsule ability host surface failed: ' + String(error));
+    }
+    try {
+      await win.setWindowShadowEnabled(false);
+    } catch (error) {
+      console.warn('disable capsule ability host shadow failed: ' + String(error));
+    }
+    try {
+      await win.setWindowTouchable(false);
+      await win.setWindowFocusable(false);
+    } catch (error) {
+      console.warn('disable capsule ability host interaction failed: ' + String(error));
+    }
+    try {
+      await win.setWindowTopmost(true);
+    } catch (error) {
+      console.warn('set capsule ability host topmost failed: ' + String(error));
+    }
+
+    const screen: display.Display = display.getDefaultDisplaySync();
+    try {
+      await win.resizeAsync(1, 1);
+    } catch (error) {
+      try {
+        await win.resize(1, 1);
+      } catch (resizeError) {
+        console.warn('shrink capsule ability host failed: ' + String(resizeError));
+      }
+    }
+    let hostWidth: number = 64;
+    let hostHeight: number = 64;
+    try {
+      const rect = win.getWindowProperties().windowRect;
+      hostWidth = Math.max(1, rect.width);
+      hostHeight = Math.max(1, rect.height);
+    } catch (error) {
+      console.warn('query capsule ability host rect failed: ' + String(error));
+    }
+    const offscreenX: number = screen.width + hostWidth + 64;
+    const offscreenY: number = screen.height + hostHeight + 64;
+    try {
+      await win.moveWindowToAsync(offscreenX, offscreenY);
+    } catch (error) {
+      try {
+        await win.moveWindowTo(offscreenX, offscreenY);
+      } catch (moveError) {
+        console.warn('move capsule ability host offscreen failed: ' + String(moveError));
+      }
+    }
   }
 
-  private loadCapsuleHostContent(windowStage: window.WindowStage): void {
-    if (this.windowStage !== windowStage || this.mainWindow === null || this.closeRequested) {
+  private async createCapsuleSubWindow(windowStage: window.WindowStage): Promise<void> {
+    const subWindow: window.Window = await windowStage.createSubWindow(CAPSULE_SUBWINDOW_NAME);
+    if (this.windowStage !== windowStage || this.closeRequested || !this.isEligible()) {
+      try {
+        subWindow.destroyWindow();
+      } catch (_error) {
+      }
       return;
     }
-    windowStage.loadContent('pages/MasterCapsule', (error: BusinessError): void => {
-      if (error.code !== 0) {
-        console.error('load capsule host failed: ' + error.message);
-        this.terminateAbility();
-        return;
-      }
-      // setWindowContainerColor is only reliable after UI content has been loaded.
-      // Re-apply the transparent native surface here so an earlier unsupported
-      // decoration call can never leave the platform default gray background.
-      this.applyWindowStyle();
-      this.applyTransparentSurfaceStyle();
-      this.notifyAvailableAreaChanged();
-      setTimeout((): void => {
-        this.restoreInitialWindowInteraction().catch((restoreError: Error): void => {
-          console.warn('restore capsule host interaction failed: ' + restoreError.message);
-        });
-      }, INITIAL_INTERACTION_RESTORE_DELAY_MS);
+
+    this.mainWindow = subWindow;
+    try {
+      await subWindow.setFollowParentWindowLayoutEnabled(false);
+    } catch (error) {
+      console.warn('disable capsule subwindow parent-layout following failed: ' + String(error));
+    }
+    AppStorage.setOrCreate<window.Window>('masterCapsuleWindow', subWindow);
+    AppStorage.setOrCreate<string>('masterCapsuleToken', this.instanceToken);
+    AppStorage.setOrCreate<boolean>('masterCapsuleOpen', true);
+    this.applyWindowStyle();
+    this.registerCloseEvents(windowStage);
+    await this.setInitialWindowInteraction(false);
+    await this.prepareInitialGeometry();
+
+    await new Promise<void>((resolve: () => void, reject: (reason: Error) => void): void => {
+      subWindow.setUIContent('pages/MasterCapsule', (error: BusinessError): void => {
+        if (error.code !== 0) {
+          reject(new Error('load capsule subwindow content failed: ' + error.message));
+          return;
+        }
+        resolve();
+      });
     });
+    if (this.mainWindow !== subWindow || this.closeRequested) {
+      return;
+    }
+    this.applyWindowStyle();
+    this.applyTransparentSurfaceStyle();
+    this.notifyAvailableAreaChanged();
+    await subWindow.showWindow();
+    setTimeout((): void => {
+      this.restoreInitialWindowInteraction().catch((restoreError: Error): void => {
+        console.warn('restore capsule subwindow interaction failed: ' + restoreError.message);
+      });
+    }, INITIAL_INTERACTION_RESTORE_DELAY_MS);
   }
 
   private async prepareInitialGeometry(): Promise<void> {
@@ -192,38 +289,35 @@ export default class MasterCapsuleAbility extends UIAbility {
     const slotCount: number = visibleMemberCount + (includeMaster ? 1 : 0);
     const heightVp: number = Math.max(CAPSULE_HEIGHT,
       slotCount * CAPSULE_HEIGHT + Math.max(0, slotCount - 1) * state.capsuleGap);
-    const widthPx: number = Math.round(uiContext.vp2px(widthVp));
-    const heightPx: number = Math.round(uiContext.vp2px(heightVp));
-    const xPx: number = Math.round(targetDisplay.width - widthPx);
-    const yPx: number = Math.round(area.top + uiContext.vp2px(startTop));
+    const requestedWidthPx: number = Math.round(uiContext.vp2px(widthVp));
+    const requestedHeightPx: number = Math.round(uiContext.vp2px(heightVp));
 
     try {
-      await win.setWindowLimits({
-        minWidth: Math.round(uiContext.vp2px(CAPSULE_PLATFORM_MIN_WIDTH)),
-        minHeight: Math.round(uiContext.vp2px(CAPSULE_HEIGHT)),
-        maxWidth: Math.max(widthPx, area.width),
-        maxHeight: Math.max(heightPx, area.height)
-      }, true);
+      await win.resizeAsync(requestedWidthPx, requestedHeightPx);
     } catch (error) {
-      console.warn('set initial capsule host limits failed: ' + String(error));
+      console.warn('initial async capsule subwindow resize failed, falling back: ' + String(error));
+      await win.resize(requestedWidthPx, requestedHeightPx);
     }
+
+    let actualWidthPx: number = requestedWidthPx;
     try {
-      await win.resizeAsync(widthPx, heightPx);
+      const rect = win.getWindowProperties().windowRect;
+      actualWidthPx = Math.max(1, rect.width);
+    } catch (error) {
+      console.warn('query initial capsule subwindow width failed: ' + String(error));
+    }
+    const xPx: number = Math.round(targetDisplay.width - actualWidthPx);
+    const yPx: number = Math.round(area.top + uiContext.vp2px(startTop));
+    try {
       await win.moveWindowToAsync(xPx, yPx);
     } catch (error) {
-      console.warn('initial async capsule geometry failed, falling back: ' + String(error));
-      await win.resize(widthPx, heightPx);
+      console.warn('initial async capsule subwindow move failed, falling back: ' + String(error));
       await win.moveWindowTo(xPx, yPx);
     }
     try {
       await win.setWindowShadowEnabled(false);
     } catch (error) {
-      console.warn('disable initial capsule host shadow failed: ' + String(error));
-    }
-    try {
-      await win.setWindowTopmost(true);
-    } catch (error) {
-      console.warn('set initial capsule host topmost failed: ' + String(error));
+      console.warn('disable initial capsule subwindow shadow failed: ' + String(error));
     }
   }
 
@@ -369,13 +463,13 @@ export default class MasterCapsuleAbility extends UIAbility {
     if (win === null) {
       return;
     }
-    win.restore().catch((_restoreError: BusinessError): Promise<void> => win.showWindow())
+    win.showWindow()
       .then((): void => {
         this.applyWindowStyle();
         this.applyTransparentSurfaceStyle();
       })
       .catch((error: BusinessError): void => {
-        console.error('show capsule host failed: ' + error.message);
+        console.error('show capsule subwindow failed: ' + error.message);
       });
   }
 
@@ -431,6 +525,18 @@ export default class MasterCapsuleAbility extends UIAbility {
   }
 
   private terminateAbility(): void {
+    this.closeRequested = true;
+    this.unregisterCloseEvents();
+    const capsuleWindow: window.Window | null = this.mainWindow;
+    this.mainWindow = null;
+    this.clearHostRegistration();
+    if (capsuleWindow !== null) {
+      try {
+        capsuleWindow.destroyWindow();
+      } catch (error) {
+        console.warn('destroy capsule subwindow during terminate failed: ' + String(error));
+      }
+    }
     this.context.terminateSelf().catch((error: BusinessError): void => {
       console.warn('terminate capsule host failed: ' + error.message);
     });
