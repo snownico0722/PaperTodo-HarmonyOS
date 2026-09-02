@@ -194,7 +194,7 @@ export default class MasterCapsuleAbility extends UIAbility {
       slotCount * CAPSULE_HEIGHT + Math.max(0, slotCount - 1) * state.capsuleGap);
     const widthPx: number = Math.round(uiContext.vp2px(widthVp));
     const heightPx: number = Math.round(uiContext.vp2px(heightVp));
-    const xPx: number = Math.round(area.left + area.width - widthPx);
+    const xPx: number = Math.round(targetDisplay.width - widthPx);
     const yPx: number = Math.round(area.top + uiContext.vp2px(startTop));
 
     try {

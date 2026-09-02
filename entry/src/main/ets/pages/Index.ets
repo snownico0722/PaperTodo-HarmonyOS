@@ -169,8 +169,13 @@ struct Index {
 
   private closeSettings(): void {
     PaperStore.flushNow();
-    this.hostContext().terminateSelf().catch((error: BusinessError): void => {
-      console.error('close settings failed: ' + error.message);
+    const win: window.Window | null = this.settingsWindow;
+    if (win === null) {
+      console.warn('minimize settings skipped: settings window is unavailable');
+      return;
+    }
+    win.minimize().catch((error: BusinessError): void => {
+      console.error('minimize settings failed: ' + error.message);
     });
   }
 
