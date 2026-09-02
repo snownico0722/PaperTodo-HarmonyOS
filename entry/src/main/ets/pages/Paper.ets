@@ -120,6 +120,10 @@ interface ClipboardImageCandidate {
   uri?: string;
 }
 
+// Cross-window drag association is temporarily hidden on HarmonyOS PC.
+// Existing links and non-drag association paths stay intact.
+const SHOW_PAPER_LINK_DRAG_HANDLE: boolean = false;
+
 @Entry({ useSharedStorage: true })
 @Component
 struct Paper {
@@ -3330,7 +3334,7 @@ struct Paper {
 
   private topBarActionItemCount(): number {
     let count: number = 0;
-    if (this.enablePaperLinks) {
+    if (SHOW_PAPER_LINK_DRAG_HANDLE && this.enablePaperLinks) {
       count += 1;
     }
     if (this.showTopBarExternalOpenButton && this.paper !== null && this.paper.type === PAPER_TYPE_NOTE) {
@@ -3347,7 +3351,7 @@ struct Paper {
 
   private topBarActionGroupWidth(): number {
     let width: number = 0;
-    if (this.enablePaperLinks) {
+    if (SHOW_PAPER_LINK_DRAG_HANDLE && this.enablePaperLinks) {
       width += 26;
     }
     if (this.showTopBarExternalOpenButton && this.paper !== null && this.paper.type === PAPER_TYPE_NOTE) {
@@ -3436,7 +3440,7 @@ struct Paper {
 
       if (this.showTopBarActionGroup()) {
         Row({ space: 2 }) {
-          if (this.enablePaperLinks) {
+          if (SHOW_PAPER_LINK_DRAG_HANDLE && this.enablePaperLinks) {
             Stack({ alignContent: Alignment.Center }) {
               Text(this.isPaperLinked() ? '⦿' : '⌖')
                 .fontSize(13)
