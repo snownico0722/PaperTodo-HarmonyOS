@@ -1,0 +1,31 @@
+name: V336 Capsule Subwindow Patch
+
+on:
+  push:
+    branches:
+      - fix/v336-capsule-subwindow
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply and commit capsule subwindow patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/_v336_subwindow_patch.py
+          git diff --check
+          bash -n .github/scripts/agc-release-sign.sh
+          rm .github/scripts/_v336_subwindow_patch.py
+          rm .github/workflows/v336-subwindow-patch.yml
+          git config user.name 'PaperTodo CI'
+          git config user.email 'actions@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: move capsule UI to masked subwindow'
+          git push origin HEAD:fix/v336-capsule-subwindow
