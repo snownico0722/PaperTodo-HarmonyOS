@@ -123,6 +123,20 @@ jobs:
           AGC_APP_ID: ${{ secrets.AGC_APP_ID }}
         run: bash .github/scripts/agc-release-sign.sh sign
 
+      - name: Report safe AGC signing failure details
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          SIGN_DIR="${RUNNER_TEMP}/papertodo-signing-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          for response in cert-response.json profile-response.json; do
+            file="$SIGN_DIR/$response"
+            if [[ -s "$file" ]]; then
+              echo "--- $response ---"
+              jq '{ret: .ret}' "$file" || true
+            fi
+          done
+
       - name: Upload verified signed release
         uses: actions/upload-artifact@v4
         with:
