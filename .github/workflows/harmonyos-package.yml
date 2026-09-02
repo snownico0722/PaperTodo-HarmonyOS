@@ -120,7 +120,22 @@ jobs:
         run: ohpm install
 
       - name: Run local unit tests
-        run: hvigorw test -p module=entry -p coverage=false --no-daemon
+        shell: bash
+        timeout-minutes: 3
+        run: |
+          set +e
+          timeout --signal=TERM --kill-after=10s 120s hvigorw test -p module=entry -p coverage=false --no-daemon
+          status=$?
+          set -e
+          result='entry/.test/default/intermediates/test/coverage_data/test_result.txt'
+          if [[ -f "$result" ]]; then
+            echo '--- Local Test result ---'
+            cat "$result"
+          fi
+          if [[ "$status" == '124' || "$status" == '137' ]]; then
+            echo 'HarmonyOS Local Test exceeded 120 seconds; formal packaging is blocked.' >&2
+          fi
+          exit "$status"
 
       - name: Assemble release APP
         run: hvigorw assembleApp --mode project -p product=default -p buildMode=release -p enableSignTask=false --no-daemon
