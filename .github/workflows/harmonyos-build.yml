@@ -32,6 +32,7 @@ jobs:
         shell: bash
         run: |
           bash -n .github/scripts/agc-release-sign.sh
+          bash -n .github/scripts/agc-release-slot-maintenance.sh
           bash -n .github/scripts/agc-release-inventory.sh
 
       - name: Cache HarmonyOS Command Line Tools

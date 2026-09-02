@@ -6,8 +6,8 @@
 
 - `ManagerAbility` 仅在冷启动时启动一次后台 `EntryAbility`；任务栏 / singleton `onNewWant` / `onForeground` 不再重复启动隐藏 UIAbility，设置窗口恢复改为单通道串行处理，避免后台宿主反向抢占前台焦点。
 - `EntryAbility` 在后续 `onNewWant` / `onForeground` 被系统复用时立即重新 `hideAbility()`；Recovery 状态独立保留，避免透明后台窗口成为最终前台 mission。
-- 正式签名改为持久发布身份 `PaperTodo-Release-Stable-v1`：受信 runner 从受保护 AGC 服务账号密钥通过版本化 HMAC 稳定派生同一 P-256 私钥，并长期复用同一 AGC Release 证书 / Profile；不再每次构建消耗一个传统证书槽位。首次迁移只允许精确回收已被后续版本取代的 3.3.1 旧 Release 对，3.3.2 / 3.3.3 不自动删除。
-- 正式签名增加公钥一致性门禁；若 AGC 服务账号密钥轮换导致派生私钥变化，流水线直接失败并要求显式迁移，不会静默替换现有稳定签名身份。
+- 正式签名恢复为已连续验证成功的 keytool 一次发布密钥 / CSR + AGC Release 证书 / Profile 路径；不再尝试从 Service Account 密钥派生应用发布私钥。
+- 新增传统 Release 证书滚动槽位管理：账号达到证书上限时，仅回收命名符合 `PaperTodo-Release-<semver>-...` 的最老 CI 发布对，严格按 Profile 先删、证书后删，并至少保留最新一套既有 PaperTodo Release 身份；不删除无关证书。HarmonyOS 跨版本更新继续由同一 AGC 应用的 `appIdentifier` 保持一致性。
 - `HarmonyOS Build` 与正式发布流水线都会调用现有 Hypium Local Test 命令并要求全部测试源码通过 `UnitTestArkTS` 编译；Huawei Linux previewer 当前在该阶段后无法执行断言，因此 Ubuntu CI 使用有界超时并明确标记这一平台限制，断言执行仍需 Windows / macOS / 真机环境，不能将 Linux 编译门禁冒充为测试执行成功。
 - 主胶囊对 `uiLanguage` / `systemLanguage` 增加布局监听，运行中切换语言后会立即重新测量本地化主胶囊宽度。
 - 版本更新为 `3.3.4`（`versionCode: 3030400`，`buildVersion: 1`）。
