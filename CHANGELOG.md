@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.3.6 — 2026-09-03
+
+第六轮 HarmonyOS PC / 2in1 真机回归修复，3.3.5 已证明 `setWindowMask()` 直接作用于多 UIAbility 的主窗口无法移除系统 floating 主窗外壳，本版按华为官方异形窗口实现改为真实应用子窗口。
+
+- `MasterCapsuleAbility` 的 UIAbility 主窗口不再承载可见胶囊；主窗口仅作为 2in1 子窗口的生命周期宿主，关闭装饰、禁用交互并移动到物理屏幕外。
+- 通过 `WindowStage.createSubWindow()` 创建 `PaperTodoCapsuleSubWindow`，使用 `setUIContent('pages/MasterCapsule')` 加载胶囊 UI；`Window.setWindowMask()` 现在作用于官方异形窗口实践明确支持的应用子窗口，而不是普通 UIAbility 主窗口。
+- 子窗口显式关闭 `setFollowParentWindowLayoutEnabled`，独立维护位置和大小；父主窗保持 `WINDOW_TOPMOST`，子窗口随应用层级保持桌面可达。
+- 每次调整胶囊尺寸后读取 `getWindowProperties().windowRect.width/height` 的实际像素尺寸，再以 `display.width - actualWidth` 重新计算 X；即使系统修正请求尺寸，右边缘仍精确落在物理屏幕边缘。
+- Window Mask 同样按子窗口实际像素尺寸生成，避免请求尺寸与最终窗口尺寸不一致导致掩码失效。
+- 版本更新为 `3.3.6`（`versionCode: 3030600`，`buildVersion: 1`）。
+
 ## 3.3.5 — 2026-09-02
 
 第五轮 HarmonyOS PC / 2in1 真机回归修复，针对 3.3.4 仍可复现的任务栏设置入口和胶囊原生矩形壳。
