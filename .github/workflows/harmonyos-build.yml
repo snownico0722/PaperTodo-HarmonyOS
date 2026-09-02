@@ -67,7 +67,22 @@ jobs:
         run: ohpm install
 
       - name: Run local unit tests
-        run: hvigorw test -p module=entry -p coverage=false --no-daemon
+        shell: bash
+        timeout-minutes: 3
+        run: |
+          set +e
+          timeout --signal=TERM --kill-after=10s 120s hvigorw test -p module=entry -p coverage=false --no-daemon
+          status=$?
+          set -e
+          result='entry/.test/default/intermediates/test/coverage_data/test_result.txt'
+          if [[ -f "$result" ]]; then
+            echo '--- Local Test result ---'
+            cat "$result"
+          fi
+          if [[ "$status" == '124' || "$status" == '137' ]]; then
+            echo 'HarmonyOS Local Test exceeded 120 seconds; treating the stalled test runner as a CI failure.' >&2
+          fi
+          exit "$status"
 
       - name: Build HAP
         run: hvigorw assembleHap --mode module -p product=default -p buildMode=debug --no-daemon
