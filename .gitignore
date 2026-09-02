@@ -4,10 +4,13 @@
 oh_modules/
 node_modules/
 local.properties
+command-line-tools/
+.tools.zip.*
 
 # Build outputs
 build/
 **/build/
+**/.test/
 
 # Signing material
 *.p12

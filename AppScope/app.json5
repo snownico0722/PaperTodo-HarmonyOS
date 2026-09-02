@@ -1,9 +1,9 @@
 {
   "app": {
-    "bundleName": "com.snownico.papertodo",
+    "bundleName": "com.papertodo.app",
     "vendor": "snownico0722",
-    "versionCode": 1000000,
-    "versionName": "1.0.0",
+    "versionCode": 3030100,
+    "versionName": "3.3.1",
     "buildVersion": "1",
     "icon": "$media:app_icon",
     "label": "$string:app_name"

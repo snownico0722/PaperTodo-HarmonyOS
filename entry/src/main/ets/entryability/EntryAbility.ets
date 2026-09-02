@@ -5,38 +5,57 @@ import {
   UIAbility,
   Want
 } from '@kit.AbilityKit';
-import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
-import { window } from '@kit.ArkUI';
-import { PaperData } from '../common/Models';
+import { BusinessError } from '@kit.BasicServicesKit';
+import { display, window } from '@kit.ArkUI';
+import { DesktopShell } from '../common/DesktopShell';
+import { AppState, PAPER_TYPE_TODO, PaperData } from '../common/Models';
 import { PaperStore } from '../common/PaperStore';
-
-const DOMAIN: number = 0x0000;
-const TAG: string = 'PaperTodo';
+import { TrayService } from '../common/TrayService';
 
 export default class EntryAbility extends UIAbility {
+  private windowStage: window.WindowStage | null = null;
+  private hostWindow: window.Window | null = null;
+  private launchGeneration: number = 0;
+  private recoveryVisible: boolean = false;
+
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     PaperStore.initialize(this.context);
     AppStorage.setOrCreate<number>('systemColorMode', this.context.config.colorMode ??
       ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT);
+    AppStorage.setOrCreate<string>('recoveryReason', '');
   }
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    this.context.showAbility().catch((error: BusinessError): void => {
-      hilog.warn(DOMAIN, TAG, 'show manager failed: %{public}s', error.message);
+    const generation: number = ++this.launchGeneration;
+    this.handleLauncherReactivation(generation).catch((error: Error): void => {
+      console.error('handle launcher reactivation failed: ' + error.message);
     });
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
-    hilog.info(DOMAIN, TAG, '%{public}s', 'Window stage created');
-
-    windowStage.loadContent('pages/Index', (err: BusinessError): void => {
-      if (err.code !== 0) {
-        hilog.error(DOMAIN, TAG, 'Failed to load content. Cause: %{public}s', JSON.stringify(err));
+    this.windowStage = windowStage;
+    this.hostWindow = windowStage.getMainWindowSync();
+    this.applyHiddenHostStyle();
+    windowStage.loadContent('pages/Host', (error: BusinessError): void => {
+      if (error.code !== 0) {
+        this.showRecovery('无法加载后台宿主页：' + error.message);
         return;
       }
-      this.restoreVisiblePapers();
+      this.bootstrap().catch((reason: Error): void => {
+        this.showRecovery('桌面入口启动失败：' + reason.message);
+      });
     });
+  }
+
+  onForeground(): void {
+    this.applyHiddenHostStyle();
+  }
+
+  onConfigurationUpdate(config: Configuration): void {
+    PaperStore.refreshSystemLanguage();
+    if (config.colorMode !== undefined) {
+      AppStorage.setOrCreate<number>('systemColorMode', config.colorMode);
+    }
   }
 
   onBackground(): void {
@@ -45,45 +64,204 @@ export default class EntryAbility extends UIAbility {
 
   onDestroy(): void {
     PaperStore.flushNow();
+    this.hostWindow = null;
+    this.windowStage = null;
   }
 
-  onConfigurationUpdate(config: Configuration): void {
-    if (config.colorMode !== undefined) {
-      AppStorage.setOrCreate<number>('systemColorMode', config.colorMode);
+  async onPrepareToTerminateAsync(): Promise<boolean> {
+    PaperStore.flushNow();
+    return false;
+  }
+
+  private async bootstrap(): Promise<void> {
+    this.applyHiddenHostStyle();
+    const statusInstalled: boolean = await TrayService.install(this.context);
+    let residentStarted: boolean = false;
+    if (statusInstalled) {
+      residentStarted = await this.startResidentWithRetry();
     }
-  }
 
-  private restoreVisiblePapers(): void {
-    const papers: PaperData[] = PaperStore.listPapers();
-    let started: number = 0;
+    let papers: PaperData[] = PaperStore.listPapers();
+    if (papers.length === 0 && !PaperStore.hasStorageError()) {
+      const replacement: PaperData | null = PaperStore.createPaper(PAPER_TYPE_TODO);
+      papers = replacement === null ? [] : [replacement];
+    }
+
+    const starts: Promise<boolean>[] = [];
+    const state: AppState = PaperStore.loadState();
     for (let i: number = 0; i < papers.length; i++) {
-      if (!papers[i].isVisible) {
-        continue;
+      const delegatedToEdge: boolean = papers[i].isCollapsed && state.useCapsuleMode &&
+        state.useDeepCapsuleMode;
+      if (papers[i].isVisible && !delegatedToEdge) {
+        starts.push(DesktopShell.startPaper(this.context, papers[i].id));
       }
-      started += 1;
-      this.startPaper(papers[i].id);
+    }
+    const results: boolean[] = await Promise.all(starts);
+    let paperStarted: boolean = false;
+    for (let i: number = 0; i < results.length; i++) {
+      paperStarted = paperStarted || results[i];
+    }
+    const capsuleReachable: boolean = await DesktopShell.syncCapsules(this.context);
+
+    if (!statusInstalled && !paperStarted && !capsuleReachable) {
+      this.showRecovery('状态栏入口和纸张窗口均未能启动。');
+      return;
     }
 
-    if (deviceInfo.deviceType === '2in1' && started > 0) {
-      setTimeout((): void => {
-        this.context.hideAbility().catch((error: BusinessError): void => {
-          hilog.warn(DOMAIN, TAG, 'hide manager failed: %{public}s', error.message);
-        });
-      }, 300);
+    if (statusInstalled && !residentStarted) {
+      await this.cleanupFailedResident();
+      if (!paperStarted && !capsuleReachable) {
+        this.showRecovery('状态栏入口启动失败，且没有可用的纸片窗口。');
+        return;
+      }
+    }
+
+    // Keep this singleton as an invisible launcher target. Terminating it
+    // makes a taskbar/launcher click cold-bootstrap the app again instead of
+    // delivering onNewWant, so Settings can never be reached from that icon.
+    await this.hideLauncherHost();
+  }
+
+  private async handleLauncherReactivation(generation: number): Promise<void> {
+    await DesktopShell.openSettings(this.context);
+    if (generation !== this.launchGeneration) {
+      return;
+    }
+    const statusInstalled: boolean = await TrayService.install(this.context);
+    if (generation !== this.launchGeneration) {
+      return;
+    }
+    const residentStarted: boolean = statusInstalled ? await this.startResidentWithRetry() : false;
+    if (generation !== this.launchGeneration) {
+      return;
+    }
+    if (statusInstalled && !residentStarted) {
+      await this.cleanupFailedResident();
+      if (generation !== this.launchGeneration) {
+        return;
+      }
+      if (PaperStore.listPapers().length === 0) {
+        this.showRecovery('状态栏入口启动失败，且没有可用的纸片窗口。');
+        return;
+      }
+    }
+    await this.hideLauncherHost();
+  }
+
+  private async hideLauncherHost(): Promise<void> {
+    this.applyHiddenHostStyle();
+    try {
+      await this.context.hideAbility();
+    } catch (error) {
+      // hideAbility is available on PC/2-in-1 only after the app has a status
+      // bar item. If the status-bar service is unavailable, keeping this host
+      // transparent/non-focusable is still preferable to terminating the
+      // singleton and losing taskbar reactivation semantics.
+      console.warn('hide launcher host failed: ' + String(error));
     }
   }
 
-  private startPaper(paperId: string): void {
-    const want: Want = {
-      bundleName: 'com.snownico.papertodo',
-      moduleName: 'entry',
-      abilityName: 'PaperAbility',
-      parameters: {
-        paperId: paperId
+  private async cleanupFailedResident(): Promise<void> {
+    const removed: boolean = await TrayService.remove(this.context);
+    AppStorage.setOrCreate<string>('statusBarStatus', removed ?
+      'resident error: inactive item removed' : 'resident error: unable to remove inactive item');
+  }
+
+  private async startResidentWithRetry(): Promise<boolean> {
+    for (let attempt: number = 0; attempt < 3; attempt++) {
+      if (await DesktopShell.startResident(this.context)) {
+        return true;
       }
-    };
-    this.context.startAbility(want).catch((error: BusinessError): void => {
-      hilog.error(DOMAIN, TAG, 'start PaperAbility failed: %{public}s', error.message);
+      if (attempt < 2) {
+        await new Promise<void>((resolve: () => void): void => {
+          setTimeout(resolve, 240 * (attempt + 1));
+        });
+      }
+    }
+    return false;
+  }
+
+  private applyHiddenHostStyle(): void {
+    const win: window.Window | null = this.hostWindow;
+    if (win === null) {
+      return;
+    }
+    try {
+      win.setWindowDecorVisible(false);
+    } catch (error) {
+      console.error('hide entry decor failed: ' + String(error));
+    }
+    try {
+      win.setWindowTitleButtonVisible(false, false, false);
+      win.setWindowTitleMoveEnabled(false);
+    } catch (error) {
+      console.error('hide entry title controls failed: ' + String(error));
+    }
+    try {
+      win.setWindowBackgroundColor('#00000000');
+    } catch (error) {
+      console.error('clear entry background failed: ' + String(error));
+    }
+    try {
+      win.setWindowContainerColor('#00000000', '#00000000');
+    } catch (error) {
+      console.error('clear entry container failed: ' + String(error));
+    }
+    win.setWindowShadowEnabled(false).catch((error: BusinessError): void => {
+      console.error('disable entry shadow failed: ' + error.message);
     });
+    if (!this.recoveryVisible) {
+      win.setWindowTouchable(false).catch((error: BusinessError): void => {
+        console.error('disable entry touch failed: ' + error.message);
+      });
+      win.setWindowFocusable(false).catch((error: BusinessError): void => {
+        console.error('disable entry focus failed: ' + error.message);
+      });
+    }
+  }
+
+  private showRecovery(reason: string): void {
+    this.recoveryVisible = true;
+    AppStorage.setOrCreate<string>('recoveryReason', reason);
+    const stage: window.WindowStage | null = this.windowStage;
+    const win: window.Window | null = this.hostWindow;
+    if (stage === null || win === null) {
+      return;
+    }
+    stage.loadContent('pages/Recovery', (error: BusinessError): void => {
+      if (error.code !== 0) {
+        console.error('load recovery page failed: ' + error.message);
+        return;
+      }
+      this.configureRecoveryWindow();
+    });
+  }
+
+  private configureRecoveryWindow(): void {
+    const win: window.Window | null = this.hostWindow;
+    if (win === null) {
+      return;
+    }
+    this.applyHiddenHostStyle();
+    const screen: display.Display = display.getDefaultDisplaySync();
+    const uiContext: UIContext = win.getUIContext();
+    const widthPx: number = Math.round(uiContext.vp2px(460));
+    const heightPx: number = Math.round(uiContext.vp2px(300));
+    const availableWidth: number = screen.availableWidth > 0 ? screen.availableWidth : screen.width;
+    const availableHeight: number = screen.availableHeight > 0 ? screen.availableHeight : screen.height;
+    win.setWindowTouchable(true).catch((error: BusinessError): void => {
+      console.error('enable recovery touch failed: ' + error.message);
+    });
+    win.setWindowFocusable(true).catch((error: BusinessError): void => {
+      console.error('enable recovery focus failed: ' + error.message);
+    });
+    win.resize(widthPx, heightPx)
+      .then((): Promise<void> => win.moveWindowTo(Math.max(0, Math.round((availableWidth - widthPx) / 2)),
+        Math.max(0, Math.round((availableHeight - heightPx) / 2))))
+      .then((): Promise<void> => win.showWindow())
+      .then((): void => this.applyHiddenHostStyle())
+      .catch((error: BusinessError): void => {
+        console.error('show recovery window failed: ' + error.message);
+      });
   }
 }

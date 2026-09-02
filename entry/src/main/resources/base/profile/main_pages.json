@@ -1,6 +1,11 @@
 {
   "src": [
+    "pages/Host",
     "pages/Index",
-    "pages/Paper"
+    "pages/Paper",
+    "pages/StatusBarPage",
+    "pages/Recovery",
+    "pages/EdgeCapsule",
+    "pages/MasterCapsule"
   ]
 }
