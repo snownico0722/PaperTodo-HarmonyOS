@@ -181,12 +181,6 @@ export default class MasterCapsuleAbility extends UIAbility {
     } catch (error) {
       console.warn('disable capsule ability host interaction failed: ' + String(error));
     }
-    try {
-      await win.setWindowTopmost(true);
-    } catch (error) {
-      console.warn('set capsule ability host topmost failed: ' + String(error));
-    }
-
     const screen: display.Display = display.getDefaultDisplaySync();
     try {
       await win.resizeAsync(1, 1);
@@ -197,25 +191,26 @@ export default class MasterCapsuleAbility extends UIAbility {
         console.warn('shrink capsule ability host failed: ' + String(resizeError));
       }
     }
-    let hostWidth: number = 64;
-    let hostHeight: number = 64;
+    // API 23 application subwindows still belong to the parent WindowStage.
+    // Keep exactly one physical pixel of the parent window on-screen instead of
+    // moving the entire parent outside the display; API 26 independent subwindows
+    // are not available to this build yet. The parent remains non-touchable,
+    // non-focusable, transparent, and sits in the bottom-right corner.
+    const edgeX: number = Math.max(0, screen.width - 1);
+    const edgeY: number = Math.max(0, screen.height - 1);
     try {
-      const rect = win.getWindowProperties().windowRect;
-      hostWidth = Math.max(1, rect.width);
-      hostHeight = Math.max(1, rect.height);
-    } catch (error) {
-      console.warn('query capsule ability host rect failed: ' + String(error));
-    }
-    const offscreenX: number = screen.width + hostWidth + 64;
-    const offscreenY: number = screen.height + hostHeight + 64;
-    try {
-      await win.moveWindowToAsync(offscreenX, offscreenY);
+      await win.moveWindowToAsync(edgeX, edgeY);
     } catch (error) {
       try {
-        await win.moveWindowTo(offscreenX, offscreenY);
+        await win.moveWindowTo(edgeX, edgeY);
       } catch (moveError) {
-        console.warn('move capsule ability host offscreen failed: ' + String(moveError));
+        console.warn('anchor capsule ability host at display edge failed: ' + String(moveError));
       }
+    }
+    try {
+      await win.showWindow();
+    } catch (error) {
+      console.warn('ensure capsule ability host visible failed: ' + String(error));
     }
   }
 
@@ -268,10 +263,16 @@ export default class MasterCapsuleAbility extends UIAbility {
 
   private async prepareInitialGeometry(): Promise<void> {
     const win: window.Window | null = this.mainWindow;
-    if (win === null) {
+    const contextWindow: window.Window | null = this.hostWindow;
+    if (win === null || contextWindow === null) {
       return;
     }
-    const uiContext: UIContext = win.getUIContext();
+    // A newly created subwindow does not have page content yet at this point.
+    // Huawei's official irregular-window flow sizes/moves the subwindow before
+    // setUIContent(), so use the already-loaded parent UIContext for vp/px
+    // conversion. After setUIContent succeeds, MasterCapsule uses the subwindow's
+    // own UIContext for all subsequent geometry/mask updates.
+    const uiContext: UIContext = contextWindow.getUIContext();
     const targetDisplay: display.Display = this.activeDisplay ?? display.getDefaultDisplaySync();
     const area: display.Rect = await this.getAvailableArea(targetDisplay);
     const state: AppState = PaperStore.loadState();

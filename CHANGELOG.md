@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.3.7 — 2026-09-03
+
+第七轮 HarmonyOS PC / 2in1 真机回归修复，修复 3.3.6 将胶囊迁移到应用子窗口后完全不可见的问题。
+
+- 修复在子窗口 `setUIContent()` 之前调用其 `getUIContext()` 的初始化顺序错误；初始 vp/px 换算改用已加载完成的父窗口 UIContext，严格保持 `createSubWindow → move/resize → setUIContent → setWindowMask → showWindow` 的官方异形窗口顺序。
+- API 23 普通应用子窗口仍绑定父 WindowStage；父窗口不再整体移动到物理屏幕外，而是保持不可交互、不可聚焦、透明，并仅在屏幕右下角保留 1 个物理像素，避免子窗口因 parent 完全离屏而失去可见性。
+- 可见胶囊仍由 `PaperTodoCapsuleSubWindow` 承载，Window Mask、实际最终 `windowRect` 贴右定位和 3.3.5 设置任务栏修复均保留。
+- 版本更新为 `3.3.7`（`versionCode: 3030700`，`buildVersion: 1`）。
+
 ## 3.3.6 — 2026-09-03
 
 第六轮 HarmonyOS PC / 2in1 真机回归修复，3.3.5 已证明 `setWindowMask()` 直接作用于多 UIAbility 的主窗口无法移除系统 floating 主窗外壳，本版按华为官方异形窗口实现改为真实应用子窗口。
