@@ -116,14 +116,14 @@ export default class EntryAbility extends UIAbility {
       }
     }
 
-    // A launcher activation must never turn into a manager-style main window.
-    // When papers are reachable, status-bar failures remain available from the
-    // Settings diagnostic and the transparent launcher host terminates.
-    await this.context.terminateSelf();
+    // Keep this singleton as an invisible launcher target. Terminating it
+    // makes a taskbar/launcher click cold-bootstrap the app again instead of
+    // delivering onNewWant, so Settings can never be reached from that icon.
+    await this.hideLauncherHost();
   }
 
   private async handleLauncherReactivation(generation: number): Promise<void> {
-    await DesktopShell.showAll(this.context);
+    await DesktopShell.openSettings(this.context);
     if (generation !== this.launchGeneration) {
       return;
     }
@@ -145,7 +145,20 @@ export default class EntryAbility extends UIAbility {
         return;
       }
     }
-    await this.context.terminateSelf();
+    await this.hideLauncherHost();
+  }
+
+  private async hideLauncherHost(): Promise<void> {
+    this.applyHiddenHostStyle();
+    try {
+      await this.context.hideAbility();
+    } catch (error) {
+      // hideAbility is available on PC/2-in-1 only after the app has a status
+      // bar item. If the status-bar service is unavailable, keeping this host
+      // transparent/non-focusable is still preferable to terminating the
+      // singleton and losing taskbar reactivation semantics.
+      console.warn('hide launcher host failed: ' + String(error));
+    }
   }
 
   private async cleanupFailedResident(): Promise<void> {
