@@ -4,11 +4,14 @@ set -euo pipefail
 
 SIGN_DIR="${RUNNER_TEMP}/papertodo-signing-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 RESOURCE_PREFIX_REGEX='^PaperTodo-Test-'
-SIGNING_JWT=''
+STABLE_RESOURCE_NAME='PaperTodo-Release-Stable-v1'
+STABLE_KEY_ALIAS='papertodo_release_stable_v1'
+# One-time slot migration target. This is the superseded 3.3.1 release resource;
+# 3.3.2 and 3.3.3 are intentionally never matched or deleted automatically.
+LEGACY_RELEASE_SLOT_NAME='PaperTodo-Release-3.3.1-578f89a-33580158946-1'
 CREATED_CERT_ID=''
 CREATED_PROFILE_ID=''
-CREATED_RESOURCE_NAME=''
-SIGNING_COMPLETE=0
+BOOTSTRAP_COMPLETE=0
 
 require_signing_secrets() {
   if [[ -z "${AGC_SERVICE_ACCOUNT_JSON:-}" || -z "${AGC_APP_ID:-}" ]]; then
@@ -46,6 +49,40 @@ create_jwt() {
 NODE
 }
 
+# Regenerate the same P-256 release private key on every trusted runner without
+# storing signing material in git or artifacts. The protected AGC service-account
+# private key is used only as HMAC key material with a versioned domain label.
+# If that account key is ever rotated, the public-key check against the existing
+# AGC stable certificate below fails closed and requires an explicit migration.
+derive_persistent_release_key() {
+  local output="$1"
+  RELEASE_KEY_OUTPUT="$output" node <<'NODE'
+  const crypto = require('crypto');
+  const fs = require('fs');
+  const account = JSON.parse(process.env.AGC_SERVICE_ACCOUNT_JSON);
+  const order = BigInt('0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551');
+  const seed = crypto.createHmac('sha256', account.private_key)
+    .update('PaperTodo HarmonyOS persistent release signing key v1')
+    .digest();
+  const scalar = (BigInt(`0x${seed.toString('hex')}`) % (order - 1n)) + 1n;
+  const d = Buffer.from(scalar.toString(16).padStart(64, '0'), 'hex');
+  const ecdh = crypto.createECDH('prime256v1');
+  ecdh.setPrivateKey(d);
+  const pub = ecdh.getPublicKey(undefined, 'uncompressed');
+  const b64u = value => Buffer.from(value).toString('base64url');
+  const jwk = {
+    kty: 'EC',
+    crv: 'P-256',
+    d: b64u(d),
+    x: b64u(pub.subarray(1, 33)),
+    y: b64u(pub.subarray(33, 65))
+  };
+  const key = crypto.createPrivateKey({ key: jwk, format: 'jwk' });
+  fs.writeFileSync(process.env.RELEASE_KEY_OUTPUT,
+    key.export({ format: 'pem', type: 'pkcs8' }), { mode: 0o600 });
+NODE
+}
+
 require_agc_success() {
   local action="$1"
   local status="$2"
@@ -53,7 +90,9 @@ require_agc_success() {
   local code
   code="$(jq -r '.ret.code // -1' "$response" 2>/dev/null || echo -1)"
   if [[ "$status" != '200' || "$code" != '0' ]]; then
-    echo "$action failed: HTTP=$status code=$code" >&2
+    local message
+    message="$(jq -r '.ret.msg // empty' "$response" 2>/dev/null || true)"
+    echo "$action failed: HTTP=$status code=$code${message:+ message=$message}" >&2
     exit 1
   fi
 }
@@ -126,36 +165,20 @@ delete_certificates() {
   require_agc_success 'AGC certificate cleanup' "$status" "$response"
 }
 
-cleanup_failed_signing() {
+cleanup_failed_bootstrap() {
   local original_status=$?
   trap - EXIT
-  if [[ "$original_status" == '0' || "$SIGNING_COMPLETE" == '1' || -z "$SIGNING_JWT" ]]; then
+  if [[ "$original_status" == '0' || "$BOOTSTRAP_COMPLETE" == '1' ]]; then
     return "$original_status"
   fi
-
   set +e
-  echo 'Signing failed; removing only resources created by this failed run.' >&2
-  local profile_id="$CREATED_PROFILE_ID"
-  if [[ -z "$profile_id" && -n "$CREATED_RESOURCE_NAME" ]]; then
-    local profile_list="$SIGN_DIR/failed-run-profiles.json"
-    local list_status
-    list_status="$(curl --silent --show-error --output "$profile_list" --write-out '%{http_code}' \
-      --header "Authorization: Bearer $SIGNING_JWT" \
-      --header "appId: $AGC_APP_ID" \
-      --header 'Content-Type: application/json' \
-      'https://connect-api.cloud.huawei.com/api/publish/v3/provision/list?fromRecCount=1&maxReqCount=100')"
-    if [[ "$list_status" == '200' && "$(jq -r '.ret.code // -1' "$profile_list" 2>/dev/null)" == '0' ]]; then
-      profile_id="$(jq -r --arg name "$CREATED_RESOURCE_NAME" \
-        '.provisionList[]? | select(.provisionName == $name) | .id' \
-        "$profile_list" | head -n 1)"
-    fi
-  fi
-
-  if [[ -n "$profile_id" ]]; then
-    delete_profile "$SIGNING_JWT" "$profile_id" "$SIGN_DIR/delete-failed-profile.json"
+  if [[ -n "$CREATED_PROFILE_ID" ]]; then
+    echo 'Persistent signing bootstrap failed; removing newly created profile.' >&2
+    delete_profile "$SIGNING_JWT" "$CREATED_PROFILE_ID" "$SIGN_DIR/delete-new-profile.json"
   fi
   if [[ -n "$CREATED_CERT_ID" ]]; then
-    delete_certificates "$SIGNING_JWT" "$SIGN_DIR/delete-failed-certificate.json" "$CREATED_CERT_ID"
+    echo 'Persistent signing bootstrap failed; removing newly created certificate.' >&2
+    delete_certificates "$SIGNING_JWT" "$SIGN_DIR/delete-new-certificate.json" "$CREATED_CERT_ID"
   fi
   return "$original_status"
 }
@@ -174,7 +197,7 @@ cleanup_stale() {
       '.provisionList[]? | select((.provisionName // "") | test($regex)) | .id' \
       "$profile_list" | sort -u
   )
-  echo "Stale PaperTodo CI profiles found: ${#profile_ids[@]}"
+  echo "Stale PaperTodo test profiles found: ${#profile_ids[@]}"
   local id
   for id in "${profile_ids[@]}"; do
     delete_profile "$jwt" "$id" "$SIGN_DIR/delete-stale-profile-$id.json"
@@ -189,8 +212,240 @@ cleanup_stale() {
        | (.id? // .certId? // empty)' \
       "$cert_list" | sort -u
   )
-  echo "Stale PaperTodo CI certificates found: ${#cert_ids[@]}"
+  echo "Stale PaperTodo test certificates found: ${#cert_ids[@]}"
   delete_certificates "$jwt" "$SIGN_DIR/delete-stale-certificates.json" "${cert_ids[@]}"
+}
+
+find_certificate_record() {
+  local list_file="$1"
+  local name="$2"
+  jq -c --arg name "$name" \
+    '[.. | objects | select(.certName? == $name)] | unique_by(.id // .certId) | .[0] // empty' \
+    "$list_file"
+}
+
+find_certificate_count() {
+  local list_file="$1"
+  local name="$2"
+  jq -r --arg name "$name" \
+    '[.. | objects | select(.certName? == $name)] | unique_by(.id // .certId) | length' \
+    "$list_file"
+}
+
+find_profile_record() {
+  local list_file="$1"
+  local name="$2"
+  jq -c --arg name "$name" \
+    '[.provisionList[]? | select(.provisionName? == $name)] | unique_by(.id // .provisionId) | .[0] // empty' \
+    "$list_file"
+}
+
+find_profile_count() {
+  local list_file="$1"
+  local name="$2"
+  jq -r --arg name "$name" \
+    '[.provisionList[]? | select(.provisionName? == $name)] | unique_by(.id // .provisionId) | length' \
+    "$list_file"
+}
+
+reclaim_legacy_slot_if_needed() {
+  local jwt="$1"
+  local cert_list="$2"
+  local profile_list="$3"
+
+  local legacy_cert_count legacy_profile_count
+  legacy_cert_count="$(find_certificate_count "$cert_list" "$LEGACY_RELEASE_SLOT_NAME")"
+  legacy_profile_count="$(find_profile_count "$profile_list" "$LEGACY_RELEASE_SLOT_NAME")"
+  if [[ "$legacy_cert_count" == '0' && "$legacy_profile_count" == '0' ]]; then
+    return 0
+  fi
+  if [[ "$legacy_cert_count" -gt 1 || "$legacy_profile_count" -gt 1 ]]; then
+    echo "Refusing ambiguous legacy release cleanup: certs=$legacy_cert_count profiles=$legacy_profile_count" >&2
+    exit 1
+  fi
+
+  echo "Reclaiming superseded release signing slot: $LEGACY_RELEASE_SLOT_NAME"
+  if [[ "$legacy_profile_count" == '1' ]]; then
+    local profile_record profile_id
+    profile_record="$(find_profile_record "$profile_list" "$LEGACY_RELEASE_SLOT_NAME")"
+    profile_id="$(jq -r '.id // .provisionId // empty' <<<"$profile_record")"
+    [[ -n "$profile_id" ]] || { echo 'Legacy profile id missing.' >&2; exit 1; }
+    delete_profile "$jwt" "$profile_id" "$SIGN_DIR/delete-legacy-profile.json"
+  fi
+  if [[ "$legacy_cert_count" == '1' ]]; then
+    local cert_record cert_id
+    cert_record="$(find_certificate_record "$cert_list" "$LEGACY_RELEASE_SLOT_NAME")"
+    cert_id="$(jq -r '.id // .certId // empty' <<<"$cert_record")"
+    [[ -n "$cert_id" ]] || { echo 'Legacy certificate id missing.' >&2; exit 1; }
+    delete_certificates "$jwt" "$SIGN_DIR/delete-legacy-certificate.json" "$cert_id"
+  fi
+}
+
+download_certificate() {
+  local record="$1"
+  local output="$2"
+  local url
+  url="$(jq -r '.certDownloadUrl // .downloadUrl // empty' <<<"$record")"
+  [[ -n "$url" ]] || {
+    echo "AGC certificate list did not provide a download URL for $STABLE_RESOURCE_NAME." >&2
+    exit 1
+  }
+  curl --fail --location --silent --show-error "$url" --output "$output"
+}
+
+download_profile() {
+  local record="$1"
+  local output="$2"
+  local url
+  url="$(jq -r '.provisionDownloadUrl // .downloadUrl // empty' <<<"$record")"
+  [[ -n "$url" ]] || {
+    echo "AGC profile list did not provide a download URL for $STABLE_RESOURCE_NAME." >&2
+    exit 1
+  }
+  curl --fail --location --silent --show-error "$url" --output "$output"
+}
+
+normalize_certificate_pem() {
+  local input="$1"
+  local output="$2"
+  if openssl x509 -in "$input" -noout >/dev/null 2>&1; then
+    openssl x509 -in "$input" -out "$output"
+  else
+    openssl x509 -inform DER -in "$input" -out "$output"
+  fi
+}
+
+verify_persistent_key_matches_certificate() {
+  local key_file="$1"
+  local cert_pem="$2"
+  local key_hash cert_hash
+  key_hash="$(openssl pkey -in "$key_file" -pubout -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
+  cert_hash="$(openssl x509 -in "$cert_pem" -pubkey -noout | \
+    openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
+  if [[ -z "$key_hash" || -z "$cert_hash" || "$key_hash" != "$cert_hash" ]]; then
+    echo 'Persistent release key no longer matches the AGC stable release certificate.' >&2
+    echo 'The protected AGC service-account key may have rotated; perform an explicit signing-identity migration.' >&2
+    exit 1
+  fi
+}
+
+create_stable_certificate() {
+  local jwt="$1"
+  local csr="$2"
+  local response="$3"
+  local request status
+  request="$(jq -n --rawfile csr "$csr" --arg certName "$STABLE_RESOURCE_NAME" \
+    '{csr: $csr, certName: $certName, certType: 2}')"
+  status="$(curl --silent --show-error --output "$response" --write-out '%{http_code}' \
+    --request POST \
+    --header "Authorization: Bearer $jwt" \
+    --header 'Content-Type: application/json' \
+    --data "$request" \
+    'https://connect-api.cloud.huawei.com/api/publish/v3/cert')"
+  require_agc_success 'AGC persistent release certificate creation' "$status" "$response"
+}
+
+create_stable_profile() {
+  local jwt="$1"
+  local cert_id="$2"
+  local response="$3"
+  local request status
+  request="$(jq -n \
+    --arg provisionName "$STABLE_RESOURCE_NAME" \
+    --arg certId "$cert_id" \
+    --arg appId "$AGC_APP_ID" \
+    '{provisionName: $provisionName, provisionType: 2, certId: $certId, appId: $appId}')"
+  status="$(curl --silent --show-error --output "$response" --write-out '%{http_code}' \
+    --request POST \
+    --header "Authorization: Bearer $jwt" \
+    --header 'Content-Type: application/json' \
+    --data "$request" \
+    'https://connect-api.cloud.huawei.com/api/publish/v3/provision')"
+  require_agc_success 'AGC persistent release profile creation' "$status" "$response"
+}
+
+resolve_persistent_identity() {
+  local jwt="$1"
+  local key_file="$2"
+  local csr="$3"
+  local certificate_raw="$4"
+  local certificate_pem="$5"
+  local profile="$6"
+
+  local cert_list="$SIGN_DIR/release-certificates.json"
+  local profile_list="$SIGN_DIR/release-profiles.json"
+  list_certificates "$jwt" "$cert_list"
+  list_profiles "$jwt" "$profile_list"
+
+  local stable_cert_count stable_profile_count
+  stable_cert_count="$(find_certificate_count "$cert_list" "$STABLE_RESOURCE_NAME")"
+  stable_profile_count="$(find_profile_count "$profile_list" "$STABLE_RESOURCE_NAME")"
+  if [[ "$stable_cert_count" -gt 1 || "$stable_profile_count" -gt 1 ]]; then
+    echo "Refusing ambiguous persistent release identity: certs=$stable_cert_count profiles=$stable_profile_count" >&2
+    exit 1
+  fi
+  if [[ "$stable_profile_count" == '1' && "$stable_cert_count" == '0' ]]; then
+    echo 'Persistent AGC profile exists without its certificate; refusing automatic destructive repair.' >&2
+    exit 1
+  fi
+
+  local cert_record='' cert_id='' profile_record=''
+  if [[ "$stable_cert_count" == '0' ]]; then
+    # The account historically filled all traditional release-certificate slots.
+    # Reclaim only the explicitly superseded 3.3.1 pair when bootstrapping v1.
+    reclaim_legacy_slot_if_needed "$jwt" "$cert_list" "$profile_list"
+    list_certificates "$jwt" "$cert_list"
+    list_profiles "$jwt" "$profile_list"
+
+    local cert_response="$SIGN_DIR/stable-cert-response.json"
+    create_stable_certificate "$jwt" "$csr" "$cert_response"
+    cert_id="$(jq -r '.certInfo.id // .certInfo.certId // empty' "$cert_response")"
+    local cert_url
+    cert_url="$(jq -r '.certInfo.certDownloadUrl // empty' "$cert_response")"
+    [[ -n "$cert_id" && -n "$cert_url" ]] || {
+      echo 'AGC persistent certificate response is missing id or download URL.' >&2
+      exit 1
+    }
+    CREATED_CERT_ID="$cert_id"
+    curl --fail --location --silent --show-error "$cert_url" --output "$certificate_raw"
+    normalize_certificate_pem "$certificate_raw" "$certificate_pem"
+    verify_persistent_key_matches_certificate "$key_file" "$certificate_pem"
+    stable_cert_count=1
+    echo "Created persistent AGC release certificate: $STABLE_RESOURCE_NAME"
+  else
+    cert_record="$(find_certificate_record "$cert_list" "$STABLE_RESOURCE_NAME")"
+    cert_id="$(jq -r '.id // .certId // empty' <<<"$cert_record")"
+    [[ -n "$cert_id" ]] || { echo 'Persistent certificate id missing.' >&2; exit 1; }
+    download_certificate "$cert_record" "$certificate_raw"
+    normalize_certificate_pem "$certificate_raw" "$certificate_pem"
+    verify_persistent_key_matches_certificate "$key_file" "$certificate_pem"
+    echo "Reusing persistent AGC release certificate: $STABLE_RESOURCE_NAME"
+  fi
+
+  if [[ "$stable_profile_count" == '0' ]]; then
+    local profile_response="$SIGN_DIR/stable-profile-response.json"
+    create_stable_profile "$jwt" "$cert_id" "$profile_response"
+    local profile_id profile_url
+    profile_id="$(jq -r '.provisionInfo.id // .provisionInfo.provisionId // empty' "$profile_response")"
+    profile_url="$(jq -r '.provisionInfo.provisionDownloadUrl // empty' "$profile_response")"
+    [[ -n "$profile_url" ]] || { echo 'AGC persistent profile response is missing download URL.' >&2; exit 1; }
+    CREATED_PROFILE_ID="$profile_id"
+    curl --fail --location --silent --show-error "$profile_url" --output "$profile"
+    echo "Created persistent AGC release profile: $STABLE_RESOURCE_NAME"
+  else
+    profile_record="$(find_profile_record "$profile_list" "$STABLE_RESOURCE_NAME")"
+    download_profile "$profile_record" "$profile"
+    echo "Reusing persistent AGC release profile: $STABLE_RESOURCE_NAME"
+  fi
+
+  [[ -s "$certificate_pem" && -s "$profile" ]] || {
+    echo 'Persistent release identity files are incomplete.' >&2
+    exit 1
+  }
+  # From this point the stable pair is intentional account state. Never remove it
+  # because a later local packaging/sign-tool step fails.
+  BOOTSTRAP_COMPLETE=1
+  trap - EXIT
 }
 
 sign_release() {
@@ -202,88 +457,33 @@ sign_release() {
 
   umask 077
   mkdir -p "$SIGN_DIR" package/payload
-  local key_alias='papertodo_ci_release'
-  local keystore_password="Pt-$(openssl rand -hex 16)-9A"
-  local keystore="$SIGN_DIR/release.p12"
+  local key_file="$SIGN_DIR/release-key.pem"
   local csr="$SIGN_DIR/release.csr"
-  local certificate="$SIGN_DIR/release.cer"
+  local certificate_raw="$SIGN_DIR/release.cer"
+  local certificate_pem="$SIGN_DIR/release-cert.pem"
   local profile="$SIGN_DIR/release.p7b"
+  local keystore="$SIGN_DIR/release.p12"
+  local keystore_password="Pt-$(openssl rand -hex 16)-9A"
   echo "::add-mask::$keystore_password"
 
-  keytool -genkeypair \
-    -alias "$key_alias" \
-    -keyalg EC \
-    -groupname secp256r1 \
-    -sigalg SHA256withECDSA \
-    -dname "C=CN,O=PaperTodo,OU=GitHub CI,CN=$key_alias" \
-    -keystore "$keystore" \
-    -storetype pkcs12 \
-    -validity 9125 \
-    -storepass "$keystore_password" \
-    -keypass "$keystore_password" \
-    -noprompt
-  keytool -certreq \
-    -alias "$key_alias" \
-    -sigalg SHA256withECDSA \
-    -keystore "$keystore" \
-    -storetype pkcs12 \
-    -storepass "$keystore_password" \
-    -file "$csr"
+  derive_persistent_release_key "$key_file"
+  openssl req -new -sha256 -key "$key_file" \
+    -subj "/C=CN/O=PaperTodo/OU=Release/CN=$STABLE_KEY_ALIAS" \
+    -out "$csr"
 
   local jwt
   jwt="$(create_jwt)"
   echo "::add-mask::$jwt"
-  local resource_name="PaperTodo-Release-${APP_VERSION}-${SOURCE_SHA:0:7}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-  printf '%s' "$resource_name" > "$SIGN_DIR/resource-name"
   SIGNING_JWT="$jwt"
-  CREATED_RESOURCE_NAME="$resource_name"
-  trap cleanup_failed_signing EXIT
+  trap cleanup_failed_bootstrap EXIT
+  resolve_persistent_identity "$jwt" "$key_file" "$csr" "$certificate_raw" "$certificate_pem" "$profile"
 
-  local cert_response="$SIGN_DIR/cert-response.json"
-  local cert_request
-  local status
-  cert_request="$(jq -n --rawfile csr "$csr" --arg certName "$resource_name" \
-    '{csr: $csr, certName: $certName, certType: 2}')"
-  status="$(curl --silent --show-error --output "$cert_response" --write-out '%{http_code}' \
-    --request POST \
-    --header "Authorization: Bearer $jwt" \
-    --header 'Content-Type: application/json' \
-    --data "$cert_request" \
-    'https://connect-api.cloud.huawei.com/api/publish/v3/cert')"
-  require_agc_success 'AGC release certificate creation' "$status" "$cert_response"
-  local cert_id
-  local cert_url
-  cert_id="$(jq -r '.certInfo.id // empty' "$cert_response")"
-  cert_url="$(jq -r '.certInfo.certDownloadUrl // empty' "$cert_response")"
-  [[ -n "$cert_id" && -n "$cert_url" ]]
-  CREATED_CERT_ID="$cert_id"
-  printf '%s' "$cert_id" > "$SIGN_DIR/cert-id"
-  curl --fail --location --silent --show-error "$cert_url" --output "$certificate"
-
-  local profile_response="$SIGN_DIR/profile-response.json"
-  local profile_request
-  profile_request="$(jq -n \
-    --arg provisionName "$resource_name" \
-    --arg certId "$cert_id" \
-    --arg appId "$AGC_APP_ID" \
-    '{provisionName: $provisionName, provisionType: 2, certId: $certId, appId: $appId}')"
-  status="$(curl --silent --show-error --output "$profile_response" --write-out '%{http_code}' \
-    --request POST \
-    --header "Authorization: Bearer $jwt" \
-    --header 'Content-Type: application/json' \
-    --data "$profile_request" \
-    'https://connect-api.cloud.huawei.com/api/publish/v3/provision')"
-  require_agc_success 'AGC release profile creation' "$status" "$profile_response"
-  local profile_id
-  local profile_url
-  profile_id="$(jq -r '.provisionInfo.id // .provisionInfo.provisionId // empty' "$profile_response")"
-  profile_url="$(jq -r '.provisionInfo.provisionDownloadUrl // empty' "$profile_response")"
-  [[ -n "$profile_url" ]]
-  if [[ -n "$profile_id" ]]; then
-    CREATED_PROFILE_ID="$profile_id"
-    printf '%s' "$profile_id" > "$SIGN_DIR/profile-id"
-  fi
-  curl --fail --location --silent --show-error "$profile_url" --output "$profile"
+  openssl pkcs12 -export \
+    -name "$STABLE_KEY_ALIAS" \
+    -inkey "$key_file" \
+    -in "$certificate_pem" \
+    -out "$keystore" \
+    -passout "pass:$keystore_password"
 
   mapfile -t sign_tools < <(
     find "$HOS_SDK_HOME" -type f \
@@ -300,10 +500,10 @@ sign_release() {
   local sign_tool="${sign_tools[0]}"
   local signed_app="package/payload/${PACKAGE_BASENAME}.app"
   java -jar "$sign_tool" sign-app \
-    -keyAlias "$key_alias" \
+    -keyAlias "$STABLE_KEY_ALIAS" \
     -signAlg SHA256withECDSA \
     -mode localSign \
-    -appCertFile "$certificate" \
+    -appCertFile "$certificate_pem" \
     -profileFile "$profile" \
     -inFile "${unsigned_apps[0]}" \
     -keystoreFile "$keystore" \
@@ -324,13 +524,12 @@ sign_release() {
     cd package/payload
     sha256sum "${PACKAGE_BASENAME}.app" > SHA256SUMS
     sha256sum --check SHA256SUMS
-    printf 'version=%s\ncommit=%s\nbuild_mode=release\nsigning=AGC release\nverification=hap-sign-tool verify-app\n' \
+    printf 'version=%s\ncommit=%s\nbuild_mode=release\nsigning=AGC persistent release v1\nverification=hap-sign-tool verify-app\n' \
       "$APP_VERSION" "$SOURCE_SHA" > BUILD_INFO.txt
     zip -9 "../${PACKAGE_BASENAME}.zip" \
       "${PACKAGE_BASENAME}.app" SHA256SUMS BUILD_INFO.txt
   )
-  SIGNING_COMPLETE=1
-  echo "Signed and verified formal APP: $signed_app"
+  echo "Signed and verified formal APP with persistent identity: $signed_app"
 }
 
 case "${1:-}" in
