@@ -3,7 +3,12 @@
 set -euo pipefail
 
 SIGN_DIR="${RUNNER_TEMP}/papertodo-signing-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-RESOURCE_PREFIX_REGEX='^PaperTodo-(Test|CI)-'
+RESOURCE_PREFIX_REGEX='^PaperTodo-Test-'
+SIGNING_JWT=''
+CREATED_CERT_ID=''
+CREATED_PROFILE_ID=''
+CREATED_RESOURCE_NAME=''
+SIGNING_COMPLETE=0
 
 require_signing_secrets() {
   if [[ -z "${AGC_SERVICE_ACCOUNT_JSON:-}" || -z "${AGC_APP_ID:-}" ]]; then
@@ -121,6 +126,40 @@ delete_certificates() {
   require_agc_success 'AGC certificate cleanup' "$status" "$response"
 }
 
+cleanup_failed_signing() {
+  local original_status=$?
+  trap - EXIT
+  if [[ "$original_status" == '0' || "$SIGNING_COMPLETE" == '1' || -z "$SIGNING_JWT" ]]; then
+    return "$original_status"
+  fi
+
+  set +e
+  echo 'Signing failed; removing only resources created by this failed run.' >&2
+  local profile_id="$CREATED_PROFILE_ID"
+  if [[ -z "$profile_id" && -n "$CREATED_RESOURCE_NAME" ]]; then
+    local profile_list="$SIGN_DIR/failed-run-profiles.json"
+    local list_status
+    list_status="$(curl --silent --show-error --output "$profile_list" --write-out '%{http_code}' \
+      --header "Authorization: Bearer $SIGNING_JWT" \
+      --header "appId: $AGC_APP_ID" \
+      --header 'Content-Type: application/json' \
+      'https://connect-api.cloud.huawei.com/api/publish/v3/provision/list?fromRecCount=1&maxReqCount=100')"
+    if [[ "$list_status" == '200' && "$(jq -r '.ret.code // -1' "$profile_list" 2>/dev/null)" == '0' ]]; then
+      profile_id="$(jq -r --arg name "$CREATED_RESOURCE_NAME" \
+        '.provisionList[]? | select(.provisionName == $name) | .id' \
+        "$profile_list" | head -n 1)"
+    fi
+  fi
+
+  if [[ -n "$profile_id" ]]; then
+    delete_profile "$SIGNING_JWT" "$profile_id" "$SIGN_DIR/delete-failed-profile.json"
+  fi
+  if [[ -n "$CREATED_CERT_ID" ]]; then
+    delete_certificates "$SIGNING_JWT" "$SIGN_DIR/delete-failed-certificate.json" "$CREATED_CERT_ID"
+  fi
+  return "$original_status"
+}
+
 cleanup_stale() {
   require_signing_secrets
   mkdir -p "$SIGN_DIR"
@@ -194,8 +233,11 @@ sign_release() {
   local jwt
   jwt="$(create_jwt)"
   echo "::add-mask::$jwt"
-  local resource_name="PaperTodo-CI-${SOURCE_SHA:0:7}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+  local resource_name="PaperTodo-Release-${APP_VERSION}-${SOURCE_SHA:0:7}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
   printf '%s' "$resource_name" > "$SIGN_DIR/resource-name"
+  SIGNING_JWT="$jwt"
+  CREATED_RESOURCE_NAME="$resource_name"
+  trap cleanup_failed_signing EXIT
 
   local cert_response="$SIGN_DIR/cert-response.json"
   local cert_request
@@ -214,6 +256,7 @@ sign_release() {
   cert_id="$(jq -r '.certInfo.id // empty' "$cert_response")"
   cert_url="$(jq -r '.certInfo.certDownloadUrl // empty' "$cert_response")"
   [[ -n "$cert_id" && -n "$cert_url" ]]
+  CREATED_CERT_ID="$cert_id"
   printf '%s' "$cert_id" > "$SIGN_DIR/cert-id"
   curl --fail --location --silent --show-error "$cert_url" --output "$certificate"
 
@@ -237,6 +280,7 @@ sign_release() {
   profile_url="$(jq -r '.provisionInfo.provisionDownloadUrl // empty' "$profile_response")"
   [[ -n "$profile_url" ]]
   if [[ -n "$profile_id" ]]; then
+    CREATED_PROFILE_ID="$profile_id"
     printf '%s' "$profile_id" > "$SIGN_DIR/profile-id"
   fi
   curl --fail --location --silent --show-error "$profile_url" --output "$profile"
@@ -285,6 +329,7 @@ sign_release() {
     zip -9 "../${PACKAGE_BASENAME}.zip" \
       "${PACKAGE_BASENAME}.app" SHA256SUMS BUILD_INFO.txt
   )
+  SIGNING_COMPLETE=1
   echo "Signed and verified formal APP: $signed_app"
 }
 

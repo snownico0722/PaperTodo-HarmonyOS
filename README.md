@@ -159,7 +159,7 @@ hvigorw assembleApp --mode project -p product=default -p buildMode=debug -p enab
 ### GitHub Actions
 
 - **HarmonyOS Build**：main 分支 push、PR 和手动触发时编译 unsigned HAP
-- **HarmonyOS Formal Package**：PR、`v*` tag 和手动触发时固定构建 release APP，使用 AGC release 证书 / Profile 执行 `sign-app` 与 `verify-app`，只上传 signed APP、`SHA256SUMS`、构建信息和 ZIP；缺少密钥或验签失败时整条流水线失败，不降级为 unsigned
+- **HarmonyOS Formal Package**：仅稳定版 `v*` tag 和仓库维护者手动触发，固定构建 release APP，使用 AGC release 证书 / Profile 执行 `sign-app` 与 `verify-app`，只上传 signed APP、`SHA256SUMS`、构建信息和 ZIP；缺少密钥或验签失败时整条流水线失败，不降级为 unsigned
 - CI 工具链固定为 `6.1.0.816`，下载包执行 SHA-256 校验并使用 GitHub Actions Cache
 
 ## 工程结构

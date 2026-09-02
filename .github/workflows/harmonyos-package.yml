@@ -5,9 +5,6 @@ on:
   push:
     tags:
       - 'v*'
-  pull_request:
-    branches:
-      - main
 
 permissions:
   contents: read
@@ -81,12 +78,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          SOURCE_SHA="$GITHUB_SHA"
-          if [[ "$GITHUB_EVENT_NAME" == 'pull_request' ]]; then
-            SOURCE_SHA="${{ github.event.pull_request.head.sha }}"
+          if [[ "$GITHUB_EVENT_NAME" == 'workflow_dispatch' && "$GITHUB_REF" != 'refs/heads/main' ]]; then
+            echo 'Manual formal packages must be built from main.' >&2
+            exit 1
           fi
-
+          SOURCE_SHA="$GITHUB_SHA"
           APP_VERSION="$(node -e "const fs=require('fs');const app=JSON.parse(fs.readFileSync('AppScope/app.json5','utf8'));process.stdout.write(app.app.versionName)")"
+          if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Formal package version must be stable semver, got: $APP_VERSION" >&2
+            exit 1
+          fi
           VERSION="v${APP_VERSION}"
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             VERSION="$GITHUB_REF_NAME"
