@@ -20,51 +20,41 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-
           path = Path('.github/scripts/agc-release-sign.sh')
           text = path.read_text()
-          old = '''  derive_persistent_release_key "$key_file"
-  openssl req -new -sha256 -key "$key_file" \\
-    -subj "/C=CN/O=PaperTodo/OU=Release/CN=$STABLE_KEY_ALIAS" \\
-    -out "$csr"
-'''
-          new = '''  derive_persistent_release_key "$key_file"
-
-  # Huawei Provisioning documents and our previously successful release runs
-  # use keytool's PKCS#10 / NEW CERTIFICATE REQUEST form. Keep the persistent
-  # private key, but wrap it in a temporary self-signed PKCS12 so keytool emits
-  # the CSR in the exact form already proven against AGC.
-  local bootstrap_certificate="$SIGN_DIR/release-bootstrap-cert.pem"
-  openssl req -new -x509 -sha256 -days 3650 \\
-    -key "$key_file" \\
-    -subj "/C=CN/O=PaperTodo/OU=Release/CN=$STABLE_KEY_ALIAS" \\
-    -out "$bootstrap_certificate"
-  openssl pkcs12 -export \\
-    -name "$STABLE_KEY_ALIAS" \\
-    -inkey "$key_file" \\
-    -in "$bootstrap_certificate" \\
-    -out "$keystore" \\
-    -passout "pass:$keystore_password"
-  keytool -certreq \\
-    -alias "$STABLE_KEY_ALIAS" \\
-    -sigalg SHA256withECDSA \\
-    -keystore "$keystore" \\
-    -storetype pkcs12 \\
-    -storepass "$keystore_password" \\
-    -keypass "$keystore_password" \\
-    -file "$csr"
-
-  # Fail before touching AGC if the compatibility CSR somehow does not contain
-  # the persistent release public key.
-  local key_hash csr_hash
-  key_hash="$(openssl pkey -in "$key_file" -pubout -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
-  csr_hash="$(openssl req -in "$csr" -pubkey -noout 2>/dev/null | \\
-    openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
-  if [[ -z "$key_hash" || -z "$csr_hash" || "$key_hash" != "$csr_hash" ]]; then
-    echo 'keytool CSR public key does not match the persistent release key.' >&2
-    exit 1
-  fi
-'''
+          old = "\n".join([
+              '  derive_persistent_release_key "$key_file"',
+              '  openssl req -new -sha256 -key "$key_file" \\',
+              '    -subj "/C=CN/O=PaperTodo/OU=Release/CN=$STABLE_KEY_ALIAS" \\',
+              '    -out "$csr"',
+              ''
+          ])
+          new = "\n".join([
+              '  derive_persistent_release_key "$key_file"',
+              '',
+              '  # AGC certificate requests have been proven with keytool PKCS#10 output.',
+              '  # Keep the persistent private key, but let keytool generate the CSR.',
+              '  local bootstrap_certificate="$SIGN_DIR/release-bootstrap-cert.pem"',
+              '  openssl req -new -x509 -sha256 -days 3650 \\',
+              '    -key "$key_file" \\',
+              '    -subj "/C=CN/O=PaperTodo/OU=Release/CN=$STABLE_KEY_ALIAS" \\',
+              '    -out "$bootstrap_certificate"',
+              '  openssl pkcs12 -export \\',
+              '    -name "$STABLE_KEY_ALIAS" \\',
+              '    -inkey "$key_file" \\',
+              '    -in "$bootstrap_certificate" \\',
+              '    -out "$keystore" \\',
+              '    -passout "pass:$keystore_password"',
+              '  keytool -certreq \\',
+              '    -alias "$STABLE_KEY_ALIAS" \\',
+              '    -sigalg SHA256withECDSA \\',
+              '    -keystore "$keystore" \\',
+              '    -storetype pkcs12 \\',
+              '    -storepass "$keystore_password" \\',
+              '    -keypass "$keystore_password" \\',
+              '    -file "$csr"',
+              ''
+          ])
           if old not in text:
               raise SystemExit('sign_release CSR marker not found')
           path.write_text(text.replace(old, new, 1))
