@@ -3,6 +3,8 @@ name: HarmonyOS Formal Package
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
 
@@ -17,6 +19,10 @@ concurrency:
 
 jobs:
   package:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[formal-package]'))
     name: Build, sign, and verify release APP
     runs-on: ubuntu-latest
     timeout-minutes: 30
