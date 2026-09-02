@@ -1,0 +1,31 @@
+name: V334 Cert Chain Patch
+
+on:
+  push:
+    branches:
+      - fix/v334-cert-chain-leaf
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply certificate-chain patch
+        run: python3 .github/scripts/_v334_cert_chain_patch.py
+      - name: Commit patch and remove helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "PaperTodo CI"
+          git config user.email "actions@users.noreply.github.com"
+          git rm .github/scripts/_v334_cert_chain_patch.py .github/workflows/v334-cert-chain-patch.yml
+          git add .github/scripts/agc-release-sign.sh
+          git diff --check
+          bash -n .github/scripts/agc-release-sign.sh
+          git commit -m "ci: select matching AGC leaf from certificate chain"
+          git push origin HEAD:fix/v334-cert-chain-leaf
