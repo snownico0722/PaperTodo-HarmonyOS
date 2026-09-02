@@ -15,11 +15,7 @@ import { TrayService } from '../common/TrayService';
 export default class EntryAbility extends UIAbility {
   private windowStage: window.WindowStage | null = null;
   private hostWindow: window.Window | null = null;
-  private launchGeneration: number = 0;
   private recoveryVisible: boolean = false;
-  private bootstrapComplete: boolean = false;
-  private reactivationInFlight: boolean = false;
-  private lastReactivationAt: number = 0;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     PaperStore.initialize(this.context);
@@ -29,7 +25,12 @@ export default class EntryAbility extends UIAbility {
   }
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    this.requestLauncherReactivation();
+    // ManagerAbility is the real launcher/taskbar mission. EntryAbility is only
+    // an invisible runtime host, so a repeated internal start must never open UI.
+    this.applyHiddenHostStyle();
+    DesktopShell.syncCapsules(this.context).catch((error: Error): void => {
+      console.warn('refresh capsules from runtime host failed: ' + error.message);
+    });
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
@@ -49,9 +50,6 @@ export default class EntryAbility extends UIAbility {
 
   onForeground(): void {
     this.applyHiddenHostStyle();
-    // On PC/2-in-1, bringing an existing mission to the front is a real
-    // activation path of its own. Do not depend on onNewWant alone.
-    this.requestLauncherReactivation();
   }
 
   onConfigurationUpdate(config: Configuration): void {
@@ -119,63 +117,15 @@ export default class EntryAbility extends UIAbility {
       }
     }
 
-    // Cold-start foreground is not a taskbar request. Only after bootstrap is
-    // complete do subsequent foreground transitions mean "open Settings".
-    this.bootstrapComplete = true;
-    await this.hideLauncherHost();
+    await this.hideRuntimeHost();
   }
 
-  private requestLauncherReactivation(): void {
-    if (!this.bootstrapComplete || this.recoveryVisible) {
-      return;
-    }
-    const now: number = Date.now();
-    if (this.reactivationInFlight || now - this.lastReactivationAt < 300) {
-      return;
-    }
-    this.reactivationInFlight = true;
-    this.lastReactivationAt = now;
-    const generation: number = ++this.launchGeneration;
-    this.handleLauncherReactivation(generation).then((): void => {
-      this.reactivationInFlight = false;
-    }).catch((error: Error): void => {
-      this.reactivationInFlight = false;
-      console.error('handle launcher reactivation failed: ' + error.message);
-    });
-  }
-
-  private async handleLauncherReactivation(generation: number): Promise<void> {
-    await DesktopShell.openSettings(this.context);
-    if (generation !== this.launchGeneration) {
-      return;
-    }
-    const statusInstalled: boolean = await TrayService.install(this.context);
-    if (generation !== this.launchGeneration) {
-      return;
-    }
-    const residentStarted: boolean = statusInstalled ? await this.startResidentWithRetry() : false;
-    if (generation !== this.launchGeneration) {
-      return;
-    }
-    if (statusInstalled && !residentStarted) {
-      await this.cleanupFailedResident();
-      if (generation !== this.launchGeneration) {
-        return;
-      }
-      if (PaperStore.listPapers().length === 0) {
-        this.showRecovery('状态栏入口启动失败，且没有可用的纸片窗口。');
-        return;
-      }
-    }
-    await this.hideLauncherHost();
-  }
-
-  private async hideLauncherHost(): Promise<void> {
+  private async hideRuntimeHost(): Promise<void> {
     this.applyHiddenHostStyle();
     try {
       await this.context.hideAbility();
     } catch (error) {
-      console.warn('hide launcher host failed: ' + String(error));
+      console.warn('hide runtime host failed: ' + String(error));
     }
   }
 
