@@ -305,26 +305,67 @@ download_profile() {
   curl --fail --location --silent --show-error "$url" --output "$output"
 }
 
-normalize_certificate_pem() {
-  local input="$1"
-  local output="$2"
-  if openssl x509 -in "$input" -noout >/dev/null 2>&1; then
-    openssl x509 -in "$input" -out "$output"
-  else
-    openssl x509 -inform DER -in "$input" -out "$output"
-  fi
-}
-
-verify_persistent_key_matches_certificate() {
+extract_matching_certificate_from_bundle() {
   local key_file="$1"
-  local cert_pem="$2"
-  RELEASE_KEY_FILE="$key_file" RELEASE_CERT_FILE="$cert_pem" node <<'NODE'
+  local input="$2"
+  local output="$3"
+  local candidate_dir="$SIGN_DIR/certificate-candidates"
+  local scratch="$SIGN_DIR/certificate-scratch"
+  rm -rf "$candidate_dir" "$scratch"
+  mkdir -p "$candidate_dir" "$scratch"
+
+  extract_pem_blocks() {
+    local source="$1"
+    local prefix="$2"
+    CERT_SOURCE="$source" CERT_DIR="$candidate_dir" CERT_PREFIX="$prefix" python3 <<'PY'
+import os
+import re
+from pathlib import Path
+
+source = Path(os.environ['CERT_SOURCE'])
+out_dir = Path(os.environ['CERT_DIR'])
+prefix = os.environ['CERT_PREFIX']
+data = source.read_bytes()
+blocks = re.findall(br'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', data, re.S)
+for index, block in enumerate(blocks, start=1):
+    (out_dir / f'{prefix}-{index:03d}.pem').write_bytes(block + b'\n')
+PY
+  }
+
+  # AGC download URLs may return a PEM bundle, a single DER certificate, or a
+  # PKCS#7-style chain. Collect every parseable X.509 certificate rather than
+  # assuming the first certificate in the file is the application leaf.
+  extract_pem_blocks "$input" raw
+
+  if openssl x509 -inform DER -in "$input" -out "$scratch/single-der.pem" >/dev/null 2>&1; then
+    extract_pem_blocks "$scratch/single-der.pem" der
+  fi
+
+  if openssl pkcs7 -in "$input" -print_certs -out "$scratch/pkcs7-pem.pem" >/dev/null 2>&1; then
+    extract_pem_blocks "$scratch/pkcs7-pem.pem" pkcs7-pem
+  fi
+  if openssl pkcs7 -inform DER -in "$input" -print_certs -out "$scratch/pkcs7-der.pem" >/dev/null 2>&1; then
+    extract_pem_blocks "$scratch/pkcs7-der.pem" pkcs7-der
+  fi
+
+  if keytool -printcert -rfc -file "$input" > "$scratch/keytool.pem" 2>/dev/null; then
+    extract_pem_blocks "$scratch/keytool.pem" keytool
+  fi
+
+  local candidate_count
+  candidate_count="$(find "$candidate_dir" -type f -name '*.pem' | wc -l | tr -d ' ')"
+  if [[ "$candidate_count" == '0' ]]; then
+    echo 'AGC certificate download contained no parseable X.509 certificates.' >&2
+    exit 1
+  fi
+
+  RELEASE_KEY_FILE="$key_file" RELEASE_CERT_DIR="$candidate_dir" RELEASE_CERT_OUTPUT="$output" node <<'NODE'
   const crypto = require('crypto');
   const fs = require('fs');
+  const path = require('path');
+
   const privateKey = crypto.createPrivateKey(fs.readFileSync(process.env.RELEASE_KEY_FILE));
-  const certificate = new crypto.X509Certificate(fs.readFileSync(process.env.RELEASE_CERT_FILE));
-  const keyJwk = crypto.createPublicKey(privateKey).export({ format: 'jwk' });
-  const certJwk = certificate.publicKey.export({ format: 'jwk' });
+  const targetJwk = crypto.createPublicKey(privateKey).export({ format: 'jwk' });
   const canonical = jwk => [
     jwk.kty || '',
     jwk.crv || '',
@@ -333,16 +374,38 @@ verify_persistent_key_matches_certificate() {
     jwk.n || '',
     jwk.e || ''
   ].join(':');
-  const keyCanonical = canonical(keyJwk);
-  const certCanonical = canonical(certJwk);
-  if (keyCanonical !== certCanonical) {
-    const fingerprint = value => crypto.createHash('sha256').update(value).digest('hex');
-    console.error('Persistent release key does not match the AGC stable release certificate.');
-    console.error(`persistent_public_fingerprint=${fingerprint(keyCanonical)}`);
-    console.error(`agc_certificate_public_fingerprint=${fingerprint(certCanonical)}`);
-    console.error('Refusing to persist or use a mismatched release identity.');
+  const targetCanonical = canonical(targetJwk);
+  const fingerprint = value => crypto.createHash('sha256').update(value).digest('hex');
+
+  const files = fs.readdirSync(process.env.RELEASE_CERT_DIR)
+    .filter(name => name.endsWith('.pem'))
+    .sort();
+  const unique = new Map();
+  for (const name of files) {
+    try {
+      const cert = new crypto.X509Certificate(fs.readFileSync(path.join(process.env.RELEASE_CERT_DIR, name)));
+      const rawHash = crypto.createHash('sha256').update(cert.raw).digest('hex');
+      if (!unique.has(rawHash)) {
+        unique.set(rawHash, { name, cert, canonical: canonical(cert.publicKey.export({ format: 'jwk' })) });
+      }
+    } catch (_) {
+      // Ignore duplicate extraction artifacts that are not standalone X.509 certs.
+    }
+  }
+
+  const certificates = [...unique.values()];
+  const matches = certificates.filter(item => item.canonical === targetCanonical);
+  console.log(`AGC certificate candidates: extracted=${files.length} unique=${certificates.length} matching=${matches.length}`);
+  if (matches.length !== 1) {
+    console.error('Could not identify exactly one AGC leaf certificate matching the persistent release key.');
+    console.error(`persistent_public_fingerprint=${fingerprint(targetCanonical)}`);
+    for (let i = 0; i < certificates.length; i++) {
+      console.error(`candidate_${i + 1}_public_fingerprint=${fingerprint(certificates[i].canonical)}`);
+    }
     process.exit(1);
   }
+  fs.writeFileSync(process.env.RELEASE_CERT_OUTPUT, matches[0].cert.toString(), { mode: 0o600 });
+  console.log(`Selected matching AGC application certificate from candidate: ${matches[0].name}`);
 NODE
 }
 
@@ -425,8 +488,7 @@ resolve_persistent_identity() {
     }
     CREATED_CERT_ID="$cert_id"
     curl --fail --location --silent --show-error "$cert_url" --output "$certificate_raw"
-    normalize_certificate_pem "$certificate_raw" "$certificate_pem"
-    verify_persistent_key_matches_certificate "$key_file" "$certificate_pem"
+    extract_matching_certificate_from_bundle "$key_file" "$certificate_raw" "$certificate_pem"
     stable_cert_count=1
     echo "Created persistent AGC release certificate: $STABLE_RESOURCE_NAME"
   else
@@ -434,8 +496,7 @@ resolve_persistent_identity() {
     cert_id="$(jq -r '.id // .certId // empty' <<<"$cert_record")"
     [[ -n "$cert_id" ]] || { echo 'Persistent certificate id missing.' >&2; exit 1; }
     download_certificate "$cert_record" "$certificate_raw"
-    normalize_certificate_pem "$certificate_raw" "$certificate_pem"
-    verify_persistent_key_matches_certificate "$key_file" "$certificate_pem"
+    extract_matching_certificate_from_bundle "$key_file" "$certificate_raw" "$certificate_pem"
     echo "Reusing persistent AGC release certificate: $STABLE_RESOURCE_NAME"
   fi
 
@@ -514,12 +575,6 @@ sign_release() {
   trap cleanup_failed_bootstrap EXIT
   resolve_persistent_identity "$jwt" "$key_file" "$csr" "$certificate_raw" "$certificate_pem" "$profile"
 
-  openssl pkcs12 -export \
-    -name "$STABLE_KEY_ALIAS" \
-    -inkey "$key_file" \
-    -in "$certificate_pem" \
-    -out "$keystore" \
-    -passout "pass:$keystore_password"
 
   mapfile -t sign_tools < <(
     find "$HOS_SDK_HOME" -type f \
@@ -539,7 +594,7 @@ sign_release() {
     -keyAlias "$STABLE_KEY_ALIAS" \
     -signAlg SHA256withECDSA \
     -mode localSign \
-    -appCertFile "$certificate_pem" \
+    -appCertFile "$certificate_raw" \
     -profileFile "$profile" \
     -inFile "${unsigned_apps[0]}" \
     -keystoreFile "$keystore" \
