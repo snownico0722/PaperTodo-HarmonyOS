@@ -12,18 +12,22 @@ import { PaperStore } from '../common/PaperStore';
 
 export default class ManagerAbility extends UIAbility {
   private mainWindow: window.Window | null = null;
-  private runtimeStartInFlight: boolean = false;
+  private runtimeStartIssued: boolean = false;
+  private showRunning: boolean = false;
+  private showPending: boolean = false;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     PaperStore.initialize(this.context);
     AppStorage.setOrCreate<number>('systemColorMode', this.context.config.colorMode ??
       ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT);
-    this.ensureRuntimeHost();
+    // The invisible runtime host is a cold-start dependency only. Re-launching
+    // it from taskbar/new-want/foreground paths can make that hidden UIAbility
+    // become the newest foreground mission and steal activation from Settings.
+    this.startRuntimeHostOnce();
   }
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    this.ensureRuntimeHost();
-    this.showAndRestyle();
+    this.requestSettingsShow();
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
@@ -34,15 +38,17 @@ export default class ManagerAbility extends UIAbility {
         console.error('load settings failed: ' + JSON.stringify(error));
         return;
       }
-      this.configureWindowGeometry().catch((reason: Error): void => {
+      this.configureWindowGeometry().then((): void => {
+        // Drain any activation request that arrived while the page was loading.
+        this.requestSettingsShow();
+      }).catch((reason: Error): void => {
         console.error('configure settings window failed: ' + reason.message);
       });
     });
   }
 
   onForeground(): void {
-    this.ensureRuntimeHost();
-    this.showAndRestyle();
+    this.requestSettingsShow();
   }
 
   onConfigurationUpdate(config: Configuration): void {
@@ -59,6 +65,7 @@ export default class ManagerAbility extends UIAbility {
   onDestroy(): void {
     PaperStore.flushNow();
     this.mainWindow = null;
+    this.showPending = false;
   }
 
   async onPrepareToTerminateAsync(): Promise<boolean> {
@@ -66,35 +73,78 @@ export default class ManagerAbility extends UIAbility {
     return false;
   }
 
-  private ensureRuntimeHost(): void {
-    if (this.runtimeStartInFlight) {
+  private startRuntimeHostOnce(): void {
+    if (this.runtimeStartIssued) {
       return;
     }
-    this.runtimeStartInFlight = true;
+    this.runtimeStartIssued = true;
     const want: Want = {
       bundleName: 'com.papertodo.app',
       moduleName: 'entry',
       abilityName: 'EntryAbility'
     };
     const options: StartOptions = { hideStartWindow: true };
-    this.context.startAbility(want, options).then((): void => {
-      this.runtimeStartInFlight = false;
-    }).catch((error: BusinessError): void => {
-      this.runtimeStartInFlight = false;
+    this.context.startAbility(want, options).catch((error: BusinessError): void => {
+      // Permit one later ManagerAbility recreation to retry a failed cold start,
+      // but never retry from onNewWant/onForeground in this instance.
+      this.runtimeStartIssued = false;
       console.error('start PaperTodo runtime host failed: ' + error.message);
     });
   }
 
-  private showAndRestyle(): void {
+  private requestSettingsShow(): void {
+    this.showPending = true;
+    if (this.showRunning) {
+      return;
+    }
+    this.showRunning = true;
+    this.runSettingsShowLoop().then((): void => {
+      this.showRunning = false;
+      if (this.showPending) {
+        this.requestSettingsShow();
+      }
+    }).catch((error: Error): void => {
+      this.showRunning = false;
+      console.error('show settings loop failed: ' + error.message);
+      if (this.showPending) {
+        this.requestSettingsShow();
+      }
+    });
+  }
+
+  private async runSettingsShowLoop(): Promise<void> {
+    while (this.showPending) {
+      this.showPending = false;
+      await this.showSettingsWindow();
+    }
+  }
+
+  private async showSettingsWindow(): Promise<void> {
     const win: window.Window | null = this.mainWindow;
     if (win === null) {
       return;
     }
-    win.restore().catch((_restoreError: BusinessError): Promise<void> => win.showWindow())
-      .then((): void => this.applyWindowStyle())
-      .catch((error: BusinessError): void => {
-        console.error('show settings failed: ' + error.message);
-      });
+    try {
+      await win.setWindowFocusable(true);
+    } catch (error) {
+      console.warn('enable settings focus failed: ' + String(error));
+    }
+    try {
+      await win.restore();
+    } catch (restoreError) {
+      try {
+        await win.showWindow();
+      } catch (showError) {
+        console.error('show settings failed after restore error: ' + String(showError));
+        return;
+      }
+    }
+    try {
+      await win.showWindow();
+    } catch (error) {
+      console.warn('ensure settings visible failed: ' + String(error));
+    }
+    this.applyWindowStyle();
   }
 
   private applyWindowStyle(): void {
