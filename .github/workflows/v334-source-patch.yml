@@ -2,7 +2,8 @@ name: V334 Source Patch
 
 on:
   push:
-    branches: [fix/v334-lifecycle-signing-tests]
+    branches:
+      - fix/v334-lifecycle-signing-tests
 
 permissions:
   contents: write
@@ -15,6 +16,17 @@ jobs:
         with:
           fetch-depth: 0
       - name: Patch language layout watches
-        run: python3 -c "from pathlib import Path; p=Path('entry/src/main/ets/pages/MasterCapsule.ets'); t=p.read_text(); a=\"  @StorageLink('uiLanguage') uiLanguage: string = 'system';\"; b=\"  @StorageLink('uiLanguage') @Watch('onLayoutChanged') uiLanguage: string = 'system';\"; c=\"  @StorageLink('systemLanguage') systemLanguage: string = 'zh-CN';\"; d=\"  @StorageLink('systemLanguage') @Watch('onLayoutChanged') systemLanguage: string = 'zh-CN';\"; assert a in t and c in t; p.write_text(t.replace(a,b,1).replace(c,d,1))"
+        shell: bash
+        run: |
+          python3 -c "from pathlib import Path; p=Path('entry/src/main/ets/pages/MasterCapsule.ets'); t=p.read_text(); a=\"  @StorageLink('uiLanguage') uiLanguage: string = 'system';\"; b=\"  @StorageLink('uiLanguage') @Watch('onLayoutChanged') uiLanguage: string = 'system';\"; c=\"  @StorageLink('systemLanguage') systemLanguage: string = 'zh-CN';\"; d=\"  @StorageLink('systemLanguage') @Watch('onLayoutChanged') systemLanguage: string = 'zh-CN';\"; assert a in t and c in t; p.write_text(t.replace(a,b,1).replace(c,d,1))"
       - name: Commit patch and remove helper
-        run: git config user.name PaperTodo-CI && git config user.email actions@users.noreply.github.com && git rm .github/workflows/v334-source-patch.yml && git add entry/src/main/ets/pages/MasterCapsule.ets && git diff --check && git commit -m "fix localized capsule width refresh" && git push origin HEAD:fix/v334-lifecycle-signing-tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name PaperTodo-CI
+          git config user.email actions@users.noreply.github.com
+          git rm .github/workflows/v334-source-patch.yml
+          git add entry/src/main/ets/pages/MasterCapsule.ets
+          git diff --check
+          git commit -m "fix localized capsule width refresh"
+          git push origin HEAD:fix/v334-lifecycle-signing-tests
