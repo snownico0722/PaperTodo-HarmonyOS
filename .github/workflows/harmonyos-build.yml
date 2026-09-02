@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build unsigned HAP
+    name: Validate tests and build unsigned HAP
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -28,13 +28,18 @@ jobs:
         with:
           node-version: '18'
 
+      - name: Validate release scripts
+        shell: bash
+        run: |
+          bash -n .github/scripts/agc-release-sign.sh
+          bash -n .github/scripts/agc-release-inventory.sh
+
       - name: Cache HarmonyOS Command Line Tools
         id: cache-tools
         uses: actions/cache@v4
         with:
           path: command-line-tools
           key: ${{ runner.os }}-harmonyos-cli-6.1.0.816
-          save-always: true
 
       - name: Download HarmonyOS Command Line Tools
         if: steps.cache-tools.outputs.cache-hit != 'true'
@@ -49,6 +54,7 @@ jobs:
       - name: Setup HarmonyOS build environment
         shell: bash
         run: |
+          set -euo pipefail
           TOOLS_DIR="$GITHUB_WORKSPACE/command-line-tools"
           echo "hwsdk.dir=$TOOLS_DIR/sdk" > local.properties
           echo "$TOOLS_DIR/bin" >> "$GITHUB_PATH"
@@ -58,6 +64,41 @@ jobs:
 
       - name: Install dependencies
         run: ohpm install
+
+      - name: Compile Hypium suite and attempt Local Test
+        shell: bash
+        timeout-minutes: 2
+        run: |
+          set +e
+          timeout --signal=TERM --kill-after=5s 45s \
+            hvigorw test -p module=entry -p coverage=false --no-daemon 2>&1 | tee local-test.log
+          status=${PIPESTATUS[0]}
+          set -e
+
+          result='entry/.test/default/intermediates/test/coverage_data/test_result.txt'
+          if [[ -s "$result" ]]; then
+            echo '--- HarmonyOS Local Test result ---'
+            cat "$result"
+          fi
+
+          if [[ "$status" == '0' ]]; then
+            echo 'HarmonyOS Local Test executed successfully.'
+            exit 0
+          fi
+
+          # Huawei's Linux previewer stalls immediately after UnitTestArkTS;
+          # still require the full existing Hypium suite to compile cleanly.
+          if [[ "$status" == '124' || "$status" == '137' ]]; then
+            if grep -Fq 'Finished :entry:default@UnitTestArkTS' local-test.log && \
+               ! grep -Eq 'ArkTS:ERROR|ERROR:|BUILD FAILED|FAILED:|hvigor.*ERROR' local-test.log; then
+              echo 'Linux HarmonyOS previewer did not execute assertions; all Hypium test sources compiled successfully.'
+              echo 'Assertion execution remains a Windows/macOS/device validation requirement.'
+              exit 0
+            fi
+          fi
+
+          echo "Hypium validation failed with status $status." >&2
+          exit "$status"
 
       - name: Build HAP
         run: hvigorw assembleHap --mode module -p product=default -p buildMode=debug --no-daemon

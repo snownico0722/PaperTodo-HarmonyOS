@@ -56,8 +56,8 @@ struct MasterCapsule {
   @StorageLink('overallFontScale') overallFontScale: number = 1;
   @StorageLink('capsuleTextSize') capsuleTextSize: string = 'medium';
   @StorageLink('capsuleTextBold') capsuleTextBold: boolean = false;
-  @StorageLink('uiLanguage') uiLanguage: string = 'system';
-  @StorageLink('systemLanguage') systemLanguage: string = 'zh-CN';
+  @StorageLink('uiLanguage') @Watch('onLayoutChanged') uiLanguage: string = 'system';
+  @StorageLink('systemLanguage') @Watch('onLayoutChanged') systemLanguage: string = 'zh-CN';
   @StorageLink('systemColorMode') systemColorMode: number =
     ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT;
 

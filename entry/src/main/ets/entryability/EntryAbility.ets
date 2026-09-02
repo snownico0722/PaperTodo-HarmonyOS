@@ -16,6 +16,8 @@ export default class EntryAbility extends UIAbility {
   private windowStage: window.WindowStage | null = null;
   private hostWindow: window.Window | null = null;
   private recoveryVisible: boolean = false;
+  private hideRunning: boolean = false;
+  private hidePending: boolean = false;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     PaperStore.initialize(this.context);
@@ -25,12 +27,14 @@ export default class EntryAbility extends UIAbility {
   }
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    // ManagerAbility is the real launcher/taskbar mission. EntryAbility is only
-    // an invisible runtime host, so a repeated internal start must never open UI.
+    // ManagerAbility is the only launcher/taskbar mission. EntryAbility is a
+    // runtime host and must immediately return to the background if the system
+    // reuses this singleton instance for any later internal start.
     this.applyHiddenHostStyle();
     DesktopShell.syncCapsules(this.context).catch((error: Error): void => {
       console.warn('refresh capsules from runtime host failed: ' + error.message);
     });
+    this.requestRuntimeHide();
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
@@ -50,6 +54,7 @@ export default class EntryAbility extends UIAbility {
 
   onForeground(): void {
     this.applyHiddenHostStyle();
+    this.requestRuntimeHide();
   }
 
   onConfigurationUpdate(config: Configuration): void {
@@ -65,6 +70,7 @@ export default class EntryAbility extends UIAbility {
 
   onDestroy(): void {
     PaperStore.flushNow();
+    this.hidePending = false;
     this.hostWindow = null;
     this.windowStage = null;
   }
@@ -118,6 +124,36 @@ export default class EntryAbility extends UIAbility {
     }
 
     await this.hideRuntimeHost();
+  }
+
+  private requestRuntimeHide(): void {
+    if (this.recoveryVisible) {
+      return;
+    }
+    this.hidePending = true;
+    if (this.hideRunning) {
+      return;
+    }
+    this.hideRunning = true;
+    this.runRuntimeHideLoop().then((): void => {
+      this.hideRunning = false;
+      if (this.hidePending && !this.recoveryVisible) {
+        this.requestRuntimeHide();
+      }
+    }).catch((error: Error): void => {
+      this.hideRunning = false;
+      console.warn('hide runtime host loop failed: ' + error.message);
+      if (this.hidePending && !this.recoveryVisible) {
+        this.requestRuntimeHide();
+      }
+    });
+  }
+
+  private async runRuntimeHideLoop(): Promise<void> {
+    while (this.hidePending && !this.recoveryVisible) {
+      this.hidePending = false;
+      await this.hideRuntimeHost();
+    }
   }
 
   private async hideRuntimeHost(): Promise<void> {
@@ -190,6 +226,7 @@ export default class EntryAbility extends UIAbility {
 
   private showRecovery(reason: string): void {
     this.recoveryVisible = true;
+    this.hidePending = false;
     AppStorage.setOrCreate<string>('recoveryReason', reason);
     const stage: window.WindowStage | null = this.windowStage;
     const win: window.Window | null = this.hostWindow;
