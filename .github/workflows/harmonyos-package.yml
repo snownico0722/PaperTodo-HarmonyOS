@@ -59,13 +59,6 @@ jobs:
           AGC_APP_ID: ${{ secrets.AGC_APP_ID }}
         run: bash .github/scripts/agc-release-sign.sh cleanup-stale
 
-      - name: Ensure a rolling AGC release certificate slot
-        shell: bash
-        env:
-          AGC_SERVICE_ACCOUNT_JSON: ${{ secrets.AGC_SERVICE_ACCOUNT_JSON }}
-          AGC_APP_ID: ${{ secrets.AGC_APP_ID }}
-        run: bash .github/scripts/agc-release-slot-maintenance.sh
-
       - name: Cache HarmonyOS Command Line Tools
         id: cache-tools
         uses: actions/cache@v4
@@ -162,6 +155,13 @@ jobs:
 
       - name: Assemble release APP
         run: hvigorw assembleApp --mode project -p product=default -p buildMode=release -p enableSignTask=false --no-daemon
+
+      - name: Ensure a rolling AGC release certificate slot
+        shell: bash
+        env:
+          AGC_SERVICE_ACCOUNT_JSON: ${{ secrets.AGC_SERVICE_ACCOUNT_JSON }}
+          AGC_APP_ID: ${{ secrets.AGC_APP_ID }}
+        run: bash .github/scripts/agc-release-slot-maintenance.sh
 
       - name: Create, sign, and verify AGC release APP
         shell: bash
