@@ -36,20 +36,15 @@ jobs:
           set -euxo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import re
           path = Path('entry/src/main/ets/pages/Paper.ets')
           text = path.read_text()
-          old = """            Text(this.isPaperLinked() ? '⦿' : '⌖')
-              .width(26)
-              .height(30)
-              .fontSize(13)
-              .fontColor(this.textColor())
-              .textAlign(TextAlign.Center)
-              .accessibilityText(this.text('link.to'))
-              .copyOption(CopyOptions.LocalDevice)
-              .draggable(true)
-              .onDragStart((event: DragEvent): DragItemInfo => this.beginPaperLinkDrag(event))
-          """
-          new = """            Stack({ alignContent: Alignment.Center }) {
+          pattern = re.compile(
+              r"(?m)^            Text\(this\.isPaperLinked\(\) \? '⦿' : '⌖'\)\n"
+              r"(?:^              .*\n){8}"
+              r"^              \.onDragStart\(\(event: DragEvent\): DragItemInfo => this\.beginPaperLinkDrag\(event\)\)\n"
+          )
+          replacement = """            Stack({ alignContent: Alignment.Center }) {
               Text(this.isPaperLinked() ? '⦿' : '⌖')
                 .fontSize(13)
                 .fontColor(this.textColor())
@@ -62,10 +57,11 @@ jobs:
               .draggable(true)
               .dragPreview('paper_link_drag_handle')
               .onDragStart((event: DragEvent): DragItemInfo => this.beginPaperLinkDrag(event))
-          """
-          if old not in text:
-              raise SystemExit('paper link drag source not found')
-          path.write_text(text.replace(old, new, 1))
+"""
+          next_text, count = pattern.subn(replacement, text, count=1)
+          if count != 1:
+              raise SystemExit('paper link drag source match count=' + str(count))
+          path.write_text(next_text)
           PY
           git diff --check -- entry/src/main/ets/pages/Paper.ets
           git diff -- entry/src/main/ets/pages/Paper.ets
