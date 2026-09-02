@@ -12,6 +12,73 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - run: python3 -c "import base64;exec(base64.b64decode('ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCgpwYXBlciA9IFBhdGgoImVudHJ5L3NyYy9tYWluL2V0cy9wYWdlcy9QYXBlci5ldHMiKQp0ZXh0ID0gcGFwZXIucmVhZF90ZXh0KCkKCm1hcmtlciA9ICJpbnRlcmZhY2UgQ2xpcGJvYXJkSW1hZ2VDYW5kaWRhdGUge1xuICBwaXhlbE1hcD86IGltYWdlLlBpeGVsTWFwO1xuICB1cmk/OiBzdHJpbmc7XG59XG4iCnJlcGxhY2VtZW50ID0gbWFya2VyICsgIlxuLy8gSGFybW9ueU9TIFBDIGRldmljZSBidWlsZHMgY3VycmVudGx5IGRvIG5vdCBleHBvc2UgdGhlIGNyb3NzLXBhcGVyIGRyYWcgaGFuZGxlLlxuLy8gS2VlcCB0aGUgYXNzb2NpYXRpb24gZGF0YS9wcm90b2NvbCBpbnRhY3Qgc28gZXhpc3RpbmcgbGlua3MgYW5kIG1lbnUtYmFzZWQgbGlua3MgY29udGludWUgdG8gd29yay5cbmNvbnN0IFNIT1dfUEFQRVJfTElOS19EUkFHX0hBTkRMRTogYm9vbGVhbiA9IGZhbHNlO1xuIgppZiAiY29uc3QgU0hPV19QQVBFUl9MSU5LX0RSQUdfSEFORExFIiBub3QgaW4gdGV4dDoKICAgIGlmIG1hcmtlciBub3QgaW4gdGV4dDoKICAgICAgICByYWlzZSBTeXN0ZW1FeGl0KCJDbGlwYm9hcmRJbWFnZUNhbmRpZGF0ZSBtYXJrZXIgbm90IGZvdW5kIikKICAgIHRleHQgPSB0ZXh0LnJlcGxhY2UobWFya2VyLCByZXBsYWNlbWVudCwgMSkKCm9sZCA9ICIiIiAgICBpZiAodGhpcy5lbmFibGVQYXBlckxpbmtzKSB7CiAgICAgIGNvdW50ICs9IDE7CiAgICB9CiIiIgpuZXcgPSAiIiIgICAgaWYgKFNIT1dfUEFQRVJfTElOS19EUkFHX0hBTkRMRSAmJiB0aGlzLmVuYWJsZVBhcGVyTGlua3MpIHsKICAgICAgY291bnQgKz0gMTsKICAgIH0KIiIiCmlmIG9sZCBub3QgaW4gdGV4dDoKICAgIHJhaXNlIFN5c3RlbUV4aXQoInRvcEJhckFjdGlvbkl0ZW1Db3VudCBwYXBlci1saW5rIGJyYW5jaCBub3QgZm91bmQiKQp0ZXh0ID0gdGV4dC5yZXBsYWNlKG9sZCwgbmV3LCAxKQoKb2xkID0gIiIiICAgIGlmICh0aGlzLmVuYWJsZVBhcGVyTGlua3MpIHsKICAgICAgd2lkdGggKz0gMjY7CiAgICB9CiIiIgpuZXcgPSAiIiIgICAgaWYgKFNIT1dfUEFQRVJfTElOS19EUkFHX0hBTkRMRSAmJiB0aGlzLmVuYWJsZVBhcGVyTGlua3MpIHsKICAgICAgd2lkdGggKz0gMjY7CiAgICB9CiIiIgppZiBvbGQgbm90IGluIHRleHQ6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJ0b3BCYXJBY3Rpb25Hcm91cFdpZHRoIHBhcGVyLWxpbmsgYnJhbmNoIG5vdCBmb3VuZCIpCnRleHQgPSB0ZXh0LnJlcGxhY2Uob2xkLCBuZXcsIDEpCgpoZWFkZXIgPSB0ZXh0LmZpbmQoIiAgcHJpdmF0ZSBIZWFkZXJCYXIoKSB7IikKaWYgaGVhZGVyIDwgMDoKICAgIHJhaXNlIFN5c3RlbUV4aXQoIkhlYWRlckJhciBub3QgZm91bmQiKQpkcmFnX2lmID0gdGV4dC5maW5kKCIgICAgICAgICAgaWYgKHRoaXMuZW5hYmxlUGFwZXJMaW5rcykgeyIsIGhlYWRlcikKaWYgZHJhZ19pZiA8IDA6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJIZWFkZXJCYXIgcGFwZXItbGluayBicmFuY2ggbm90IGZvdW5kIikKdGV4dCA9IHRleHRbOmRyYWdfaWZdICsgdGV4dFtkcmFnX2lmOl0ucmVwbGFjZSgKICAgICIgICAgICAgICAgaWYgKHRoaXMuZW5hYmxlUGFwZXJMaW5rcykgeyIsCiAgICAiICAgICAgICAgIGlmIChTSE9XX1BBUEVSX0xJTktfRFJBR19IQU5ETEUgJiYgdGhpcy5lbmFibGVQYXBlckxpbmtzKSB7IiwKICAgIDEKKQpwYXBlci53cml0ZV90ZXh0KHRleHQpCgpjaGFuZ2Vsb2cgPSBQYXRoKCJDSEFOR0VMT0cubWQiKQp0ZXh0ID0gY2hhbmdlbG9nLnJlYWRfdGV4dCgpCmhlYWRpbmcgPSAiIiIjIyAzLjMuMyDigJQgMjAyNi0wOS0wMgoK56ys5LiJ6L2uIEhhcm1vbnlPUyBQQyAvIDJpbjEg55yf5py65Zue5b2S5L+u5aSN77yM5oyJIDMuMy4yIOWunuacuuaIquWbvue7p+e7reaUtuaVm+eql+WPo+ivreS5ieOAggoKLSDmmoLml7bpmpDol4/nurjniYfpobbmoI/igJzmi5bliqjnu5HlrprliLDlhbbku5bigJ3lhaXlj6PvvJvkv53nlZnlt7LmnInnurjniYflhbPogZTmlbDmja7jgIHlhbPogZTmiZPlvIDlkozoj5zljZXlvI/lhbPogZTog73lipvvvIzkuI3lho3lkJHnlKjmiLfmmrTpnLLlvZPliY3orr7lpIfkuIrkuI3lj6/nlKjnmoTot6jnqpflj6Pmi5bmi73lhaXlj6PjgIIKLSBgTWFuYWdlckFiaWxpdHlgIOaUueS4uuW6lOeUqOecn+ato+eahCBIT01FIC8g5Lu75Yqh5qCP5YWl5Y+j77yMYEVudHJ5QWJpbGl0eWAg5LuF5L+d55WZ5ZCO5Y+w5ZCv5Yqo44CB54q25oCB5qCP5LiO57q154mH5oGi5aSN6IGM6LSj77yb5Ya35ZCv5Yqo44CBc2luZ2xldG9uIGBvbk5ld1dhbnRgIOWSjOWJjeWPsOaBouWkjemDveebtOaOpeaYvuekuuiuvue9rueql+WPo+OAggotIOS4u+iDtuWbiuWPlua2iOWbuuWumiBgMjAwdnBgIOWuveW6pu+8jOaMieW9k+WJjeacrOWcsOWMluaWh+ahiOWunumZhea1i+mHj+W5tumZkOWItuWcqOe0p+WHkeiMg+WbtOWGheOAggotIOiDtuWbiumYn+WIl+aUtui1t+aXtuS4jeWGjeWPquaKiuaZrumAmuiDtuWbiuiuvuS4uumAj+aYju+8jOiAjOaYr+S7jiBBcmtVSSDluIPlsYDkuK3np7vpmaTmma7pgJrooYzvvIzlubblsIbljp/nlJ/lrr/kuLvnqpflj6Ppq5jluqblkIzmraXnvKnoh7PkuIDkuKrkuLvog7blm4rvvIzmtojpmaTmlLbotbflkI7mrovnlZnnmoTlpKflnZfnqbrnmb3ngrnlh7vljLrln5/jgIIKLSDog7blm4rlrr/kuLvnmoToo4XppbDjgIHmi5bmi73nvKnmlL7jgIHog4zmma/oibLjgIHlrrnlmajoibLliIbliKvni6znq4vorr7nva7vvJvlnKggYGxvYWRDb250ZW50KClgIOWujOaIkOWQjuWGjeasoeiuvue9rumAj+aYjuiDjOaZry/lrrnlmajoibLvvIzpgb/lhY3mn5DkuKrkuI3lj5fmlK/mjIHnmoTnqpflj6PosIPnlKjpmLvmlq3lkI7nu63pgI/mmI7orr7nva7jgIIKLSDniYjmnKzmm7TmlrDkuLogYDMuMy4zYO+8iGB2ZXJzaW9uQ29kZTogMzAzMDMwMO+8jWBidWlsZFZlcnNpb246IDFg77yJ44CCgoiIiIKaWYgIiMjIDMuMy4zIOKAlCAyMDI2LTA5LTAyIiBub3QgaW4gdGV4dDoKICAgIHByZWZpeCA9ICIjIENoYW5nZWxvZ1xuXG4iCiAgICBpZiBub3QgdGV4dC5zdGFydHN3aXRoKHByZWZpeCk6CiAgICAgICAgcmFpc2UgU3lzdGVtRXhpdCgiQ0hBTkdFTE9HIGhlYWRlciBub3QgZm91bmQiKQogICAgdGV4dCA9IHByZWZpeCArIGhlYWRpbmcgKyB0ZXh0W2xlbihwcmVmaXgpOl0KICAgIGNoYW5nZWxvZy53cml0ZV90ZXh0KHRleHQpCg=='))"
-      - run: git diff --check
-      - run: git config user.name "PaperTodo CI" && git config user.email "actions@users.noreply.github.com" && git rm .github/workflows/v333-source-patch.yml && git add entry/src/main/ets/pages/Paper.ets CHANGELOG.md && git commit -m "hide unavailable cross-paper drag handle" && git push origin HEAD:fix/device-regressions-v333
+      - name: Hide cross-paper drag handle
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          path = Path('entry/src/main/ets/pages/Paper.ets')
+          text = path.read_text()
+
+          marker = """interface ClipboardImageCandidate {
+            pixelMap?: image.PixelMap;
+            uri?: string;
+          }
+          """
+          replacement = marker + """
+          // Cross-window drag association is temporarily hidden on HarmonyOS PC.
+          // Existing links and non-drag association paths stay intact.
+          const SHOW_PAPER_LINK_DRAG_HANDLE: boolean = false;
+          """
+          if 'const SHOW_PAPER_LINK_DRAG_HANDLE' not in text:
+              if marker not in text:
+                  raise SystemExit('ClipboardImageCandidate marker not found')
+              text = text.replace(marker, replacement, 1)
+
+          old = """    if (this.enablePaperLinks) {
+                count += 1;
+              }
+          """
+          new = """    if (SHOW_PAPER_LINK_DRAG_HANDLE && this.enablePaperLinks) {
+                count += 1;
+              }
+          """
+          if old not in text:
+              raise SystemExit('topBarActionItemCount branch not found')
+          text = text.replace(old, new, 1)
+
+          old = """    if (this.enablePaperLinks) {
+                width += 26;
+              }
+          """
+          new = """    if (SHOW_PAPER_LINK_DRAG_HANDLE && this.enablePaperLinks) {
+                width += 26;
+              }
+          """
+          if old not in text:
+              raise SystemExit('topBarActionGroupWidth branch not found')
+          text = text.replace(old, new, 1)
+
+          header = text.find('  private HeaderBar() {')
+          if header < 0:
+              raise SystemExit('HeaderBar not found')
+          drag_branch = text.find('          if (this.enablePaperLinks) {', header)
+          if drag_branch < 0:
+              raise SystemExit('HeaderBar drag branch not found')
+          text = text[:drag_branch] + text[drag_branch:].replace(
+              '          if (this.enablePaperLinks) {',
+              '          if (SHOW_PAPER_LINK_DRAG_HANDLE && this.enablePaperLinks) {',
+              1)
+
+          path.write_text(text)
+          PY
+          git diff --check -- entry/src/main/ets/pages/Paper.ets
+      - name: Commit UI cleanup
+        shell: bash
+        run: |
+          git config user.name "PaperTodo CI"
+          git config user.email "actions@users.noreply.github.com"
+          git rm .github/workflows/v333-source-patch.yml
+          git add entry/src/main/ets/pages/Paper.ets
+          git commit -m "hide unavailable cross-paper drag handle"
+          git push origin HEAD:fix/device-regressions-v333
