@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — 3.3.0-preview.2
+## 3.3.0 — 2026-09-02
 
 本阶段以 Windows PaperTodo v3.3 的产品行为为目标。冻结范围内的移植开发已经完成；涉及 HarmonyOS PC 窗口管理、系统状态栏和设备文件提供方的部分仍需真机验收，后续只处理现有功能缺陷，不再追加低优先级的 Windows 对等设置。
 
@@ -41,8 +41,8 @@
 
 - 数据 schema 升级到 `7`，增加主胶囊、展开纸片侧边标签、整列收起状态、队列起始位置、标题长度和“关联纸片退出胶囊队列”设置
 - 增加胶囊布局与纸片交互策略的纯逻辑测试
-- 应用版本更新为 `3.3.0-preview.2`（`versionCode: 3030002`）
-- unsigned debug HAP 已通过干净构建；运行时测试和窗口行为仍需 HarmonyOS 目标设备
+- 应用版本更新为 `3.3.0`（`versionCode: 3030003`，`buildVersion: 3`）
+- release HAP / APP 已通过干净构建；正式流水线使用 AGC release 证书 / Profile 签名 APP，执行 `verify-app` 和 SHA-256 校验后才上传，任何签名失败都不降级为 unsigned；运行时测试和窗口行为仍需 HarmonyOS 目标设备
 
 ### 明确不移植
 

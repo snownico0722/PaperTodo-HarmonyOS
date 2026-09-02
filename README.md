@@ -1,10 +1,10 @@
 # PaperTodo HarmonyOS
 
-PaperTodo 的 HarmonyOS 原生重写，使用 ArkTS + ArkUI。当前预览版以 Windows [PaperTodo](https://github.com/snownico0722/PaperTodo) v3.3 的产品语义为基准，优先还原“独立纸片 + 系统常驻入口 + 侧边胶囊”的日常使用方式，而不是把设置页做成任务管理主界面。
+PaperTodo 的 HarmonyOS 原生重写，使用 ArkTS + ArkUI。当前版本以 Windows [PaperTodo](https://github.com/snownico0722/PaperTodo) v3.3 的产品语义为基准，优先还原“独立纸片 + 系统常驻入口 + 侧边胶囊”的日常使用方式，而不是把设置页做成任务管理主界面。
 
-当前应用版本为 `3.3.0-preview.2`，数据 schema 为 `7`，目标 SDK 为 HarmonyOS `6.1.0(23)` / API 23。工程当前只声明 `2in1` 设备类型；桌面窗口、Hover、Topmost 和系统状态栏入口都需要在 HarmonyOS PC / 2in1 上验收。
+当前应用版本为 `3.3.0`（`versionCode: 3030003`），数据 schema 为 `7`，目标 SDK 为 HarmonyOS `6.1.0(23)` / API 23。工程当前只声明 `2in1` 设备类型；桌面窗口、Hover、Topmost 和系统状态栏入口都需要在 HarmonyOS PC / 2in1 上验收。
 
-> 冻结范围内的 v3.3 移植开发已经完成，并已通过 unsigned HAP / APP 构建。当前只保留 HarmonyOS PC / 2in1 真机验收和缺陷修复，不再继续追加低优先级的 Windows 对等设置。下文把“移植完成”和“已在所有设备验证”严格区分。
+> 冻结范围内的 v3.3 移植开发已经完成，并已通过 release HAP / APP 构建。正式包由 GitHub Actions 使用 AGC release 证书 / Profile 签名并强制验签；当前只保留 HarmonyOS PC / 2in1 真机验收和缺陷修复，不再继续追加低优先级的 Windows 对等设置。下文把“移植完成”和“已在所有设备验证”严格区分。
 
 ## 产品语义
 
@@ -159,7 +159,7 @@ hvigorw assembleApp --mode project -p product=default -p buildMode=debug -p enab
 ### GitHub Actions
 
 - **HarmonyOS Build**：main 分支 push、PR 和手动触发时编译 unsigned HAP
-- **HarmonyOS Package**：PR、`v*` tag 和手动触发时打包 unsigned APP / HAP、`SHA256SUMS` 和 ZIP
+- **HarmonyOS Formal Package**：PR、`v*` tag 和手动触发时固定构建 release APP，使用 AGC release 证书 / Profile 执行 `sign-app` 与 `verify-app`，只上传 signed APP、`SHA256SUMS`、构建信息和 ZIP；缺少密钥或验签失败时整条流水线失败，不降级为 unsigned
 - CI 工具链固定为 `6.1.0.816`，下载包执行 SHA-256 校验并使用 GitHub Actions Cache
 
 ## 工程结构
@@ -189,4 +189,4 @@ entry/src/main/ets/
 
 以上边界已经冻结。真机上若状态栏入口、无主界面启动、无边框纸片、顶栏新建或主 / 侧边胶囊没有按本文描述工作，按现有功能缺陷处理，而不是继续扩大移植范围。
 
-本预览的行为变更见 [CHANGELOG.md](CHANGELOG.md)。
+本版本的行为变更见 [CHANGELOG.md](CHANGELOG.md)。

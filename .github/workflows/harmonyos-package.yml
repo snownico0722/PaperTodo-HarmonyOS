@@ -1,16 +1,7 @@
-name: HarmonyOS Package
+name: HarmonyOS Formal Package
 
 on:
   workflow_dispatch:
-    inputs:
-      build_mode:
-        description: Build mode
-        required: true
-        default: debug
-        type: choice
-        options:
-          - debug
-          - release
   push:
     tags:
       - 'v*'
@@ -18,24 +9,45 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
+# AGC release certificates and profiles are account-level resources. Serialize
+# formal packages so concurrent runs cannot consume or replace the same quota.
 concurrency:
-  group: harmonyos-package-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: harmonyos-formal-package
+  cancel-in-progress: false
 
 jobs:
   package:
-    name: Package APP and HAP
+    name: Build, sign, and verify release APP
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
+
+      - name: Require AGC release signing credentials
+        shell: bash
+        env:
+          AGC_SERVICE_ACCOUNT_JSON: ${{ secrets.AGC_SERVICE_ACCOUNT_JSON }}
+          AGC_APP_ID: ${{ secrets.AGC_APP_ID }}
+        run: bash .github/scripts/agc-release-sign.sh check
+
+      - name: Cleanup stale PaperTodo test signing resources
+        shell: bash
+        env:
+          AGC_SERVICE_ACCOUNT_JSON: ${{ secrets.AGC_SERVICE_ACCOUNT_JSON }}
+          AGC_APP_ID: ${{ secrets.AGC_APP_ID }}
+        run: bash .github/scripts/agc-release-sign.sh cleanup-stale
 
       - name: Cache HarmonyOS Command Line Tools
         id: cache-tools
@@ -43,7 +55,6 @@ jobs:
         with:
           path: command-line-tools
           key: ${{ runner.os }}-harmonyos-cli-6.1.0.816
-          save-always: true
 
       - name: Download HarmonyOS Command Line Tools
         if: steps.cache-tools.outputs.cache-hit != 'true'
@@ -66,81 +77,46 @@ jobs:
           echo "HOS_SDK_HOME=$TOOLS_DIR/sdk" >> "$GITHUB_ENV"
           chmod -R +x "$TOOLS_DIR/bin"
 
-      - name: Resolve package metadata
+      - name: Resolve formal package metadata
         shell: bash
         run: |
           set -euo pipefail
-
-          BUILD_MODE="debug"
           SOURCE_SHA="$GITHUB_SHA"
-
-          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+          if [[ "$GITHUB_EVENT_NAME" == 'pull_request' ]]; then
             SOURCE_SHA="${{ github.event.pull_request.head.sha }}"
           fi
 
-          VERSION="sha-${SOURCE_SHA:0:7}"
-
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            BUILD_MODE="${{ inputs.build_mode }}"
-          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            BUILD_MODE="release"
+          APP_VERSION="$(node -e "const fs=require('fs');const app=JSON.parse(fs.readFileSync('AppScope/app.json5','utf8'));process.stdout.write(app.app.versionName)")"
+          VERSION="v${APP_VERSION}"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             VERSION="$GITHUB_REF_NAME"
+            if [[ "$VERSION" != "v${APP_VERSION}" ]]; then
+              echo "Tag $VERSION does not match AppScope version v${APP_VERSION}." >&2
+              exit 1
+            fi
           fi
 
           VERSION="$(printf '%s' "$VERSION" | tr -cs 'A-Za-z0-9._-' '-')"
-          PACKAGE_BASENAME="PaperTodo-HarmonyOS-${VERSION}-${BUILD_MODE}-unsigned"
-
-          echo "BUILD_MODE=$BUILD_MODE" >> "$GITHUB_ENV"
+          PACKAGE_BASENAME="PaperTodo-HarmonyOS-${VERSION}-${SOURCE_SHA:0:7}-release-signed"
+          echo "SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
+          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
           echo "PACKAGE_BASENAME=$PACKAGE_BASENAME" >> "$GITHUB_ENV"
-          echo "Build mode: $BUILD_MODE"
-          echo "Package: $PACKAGE_BASENAME"
+          echo "Formal package: $PACKAGE_BASENAME"
 
       - name: Install dependencies
         run: ohpm install
 
-      - name: Assemble HarmonyOS APP
-        run: hvigorw assembleApp --mode project -p product=default -p buildMode=${BUILD_MODE} -p enableSignTask=false --no-daemon
+      - name: Assemble release APP
+        run: hvigorw assembleApp --mode project -p product=default -p buildMode=release -p enableSignTask=false --no-daemon
 
-      - name: Collect package outputs
+      - name: Create, sign, and verify AGC release APP
         shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p package/payload
+        env:
+          AGC_SERVICE_ACCOUNT_JSON: ${{ secrets.AGC_SERVICE_ACCOUNT_JSON }}
+          AGC_APP_ID: ${{ secrets.AGC_APP_ID }}
+        run: bash .github/scripts/agc-release-sign.sh sign
 
-          mapfile -t APPS < <(
-            find . -type f -name '*.app' -path '*/build/*' -print | sort
-          )
-          mapfile -t HAPS < <(
-            find . -type f -name '*-unsigned.hap' -path '*/build/*' -print | sort
-          )
-
-          if [[ ${#APPS[@]} -eq 0 ]]; then
-            echo 'assembleApp succeeded, but no .app package was found.' >&2
-            echo 'Build outputs:' >&2
-            find . -type f -path '*/build/*' \
-              \( -name '*.app' -o -name '*.hap' \) \
-              -print >&2
-            exit 1
-          fi
-
-          OUTPUTS=("${APPS[@]}" "${HAPS[@]}")
-
-          printf 'Collected outputs:\n'
-          printf '  %s\n' "${OUTPUTS[@]}"
-
-          for file in "${OUTPUTS[@]}"; do
-            cp "$file" package/payload/
-          done
-
-          (
-            cd package/payload
-            sha256sum ./* > SHA256SUMS
-            zip -9 "../${PACKAGE_BASENAME}.zip" ./*
-          )
-
-          ls -lah package package/payload
-
-      - name: Upload packaged build
+      - name: Upload verified signed release
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.PACKAGE_BASENAME }}
@@ -148,6 +124,6 @@ jobs:
           retention-days: 30
           path: |
             package/${{ env.PACKAGE_BASENAME }}.zip
-            package/payload/*.app
-            package/payload/*-unsigned.hap
+            package/payload/${{ env.PACKAGE_BASENAME }}.app
             package/payload/SHA256SUMS
+            package/payload/BUILD_INFO.txt

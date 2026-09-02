@@ -2,9 +2,9 @@
   "app": {
     "bundleName": "com.papertodo.app",
     "vendor": "snownico0722",
-    "versionCode": 3030002,
-    "versionName": "3.3.0-preview.2",
-    "buildVersion": "2",
+    "versionCode": 3030003,
+    "versionName": "3.3.0",
+    "buildVersion": "3",
     "icon": "$media:app_icon",
     "label": "$string:app_name"
   }
