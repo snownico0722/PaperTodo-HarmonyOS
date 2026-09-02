@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build unsigned HAP
+    name: Test and build unsigned HAP
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -27,6 +27,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '18'
+
+      - name: Validate release scripts
+        shell: bash
+        run: |
+          bash -n .github/scripts/agc-release-sign.sh
+          bash -n .github/scripts/agc-release-inventory.sh
 
       - name: Cache HarmonyOS Command Line Tools
         id: cache-tools
@@ -49,6 +55,7 @@ jobs:
       - name: Setup HarmonyOS build environment
         shell: bash
         run: |
+          set -euo pipefail
           TOOLS_DIR="$GITHUB_WORKSPACE/command-line-tools"
           echo "hwsdk.dir=$TOOLS_DIR/sdk" > local.properties
           echo "$TOOLS_DIR/bin" >> "$GITHUB_PATH"
@@ -58,6 +65,9 @@ jobs:
 
       - name: Install dependencies
         run: ohpm install
+
+      - name: Run local unit tests
+        run: hvigorw test -p module=entry -p coverage=false --no-daemon
 
       - name: Build HAP
         run: hvigorw assembleHap --mode module -p product=default -p buildMode=debug --no-daemon
