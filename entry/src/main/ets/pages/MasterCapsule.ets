@@ -1,8 +1,9 @@
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { display, window } from '@kit.ArkUI';
-import { capsuleSlotTop, normalizeCapsuleStartTopMargin } from '../common/CapsuleLayout';
-import { DesktopShell } from '../common/DesktopShell';
+import { normalizeCapsuleStartTopMargin } from '../common/CapsuleLayout';
+import { DesktopShell, PAPER_COMMAND_SHOW } from '../common/DesktopShell';
 import {
+  CAPSULE_CLOSE_WIDTH,
   CAPSULE_HEIGHT,
   CAPSULE_MAX_WIDTH,
   CAPSULE_MIN_WIDTH,
@@ -20,38 +21,46 @@ import { PaperStore } from '../common/PaperStore';
 import { effectivePaperTitle } from '../common/PaperTitles';
 import {
   MASTER_ACTION_RETRACT,
+  PAPER_ACTION_COLLAPSE,
+  PAPER_ACTION_EXPAND,
   isPaperEmpty,
+  resolveEdgeActivateAction,
   resolveMasterToggleAction
 } from '../common/PaperInteractionPolicy';
 import { formatText, tForSystem } from '../common/Strings';
 import { ThemePalette, resolvePalette } from '../common/ThemePalette';
+
+const MASTER_ROW_WIDTH: number = 200;
 
 @Entry({ useSharedStorage: true })
 @Component
 struct MasterCapsule {
   @StorageLink('paperRevision') @Watch('onStoreChanged') paperRevision: number = 0;
   @StorageLink('capsuleAreaRevision') @Watch('onLayoutChanged') capsuleAreaRevision: number = 0;
-  @StorageLink('capsuleCollapseAllActive') @Watch('onLayoutChanged')
-  capsuleCollapseAllActive: boolean = false;
+  @StorageLink('capsuleCollapseAllActive') capsuleCollapseAllActive: boolean = false;
   @StorageLink('capsuleStartTop') @Watch('onLayoutChanged') capsuleStartTop: number = 48;
   @StorageLink('capsuleGap') @Watch('onLayoutChanged') capsuleGap: number = 4;
   @StorageLink('useCapsuleMode') @Watch('onStoreChanged') useCapsuleMode: boolean = true;
   @StorageLink('useDeepCapsuleMode') @Watch('onStoreChanged') useDeepCapsuleMode: boolean = true;
   @StorageLink('useMasterCapsule') @Watch('onStoreChanged') useMasterCapsule: boolean = true;
+  @StorageLink('enableAnimations') enableAnimations: boolean = true;
+  @StorageLink('collapseExpandedEdgeCapsuleOnClick')
+  collapseExpandedEdgeCapsuleOnClick: boolean = false;
+  @StorageLink('hideEdgeCapsuleCloseButtonOnHover') hideEdgeCapsuleCloseButtonOnHover: boolean = false;
+  @StorageLink('edgeCapsuleTitleCharacterLimit') edgeCapsuleTitleCharacterLimit: number = 0;
   @StorageLink('theme') theme: string = 'system';
   @StorageLink('colorScheme') colorScheme: string = 'warm';
-  @StorageLink('overallFontScale') @Watch('onAppearanceChanged') overallFontScale: number = 1;
-  @StorageLink('capsuleTextSize') @Watch('onAppearanceChanged') capsuleTextSize: string = 'medium';
-  @StorageLink('capsuleTextBold') @Watch('onAppearanceChanged') capsuleTextBold: boolean = false;
-  @StorageLink('uiLanguage') @Watch('onAppearanceChanged') uiLanguage: string = 'system';
-  @StorageLink('systemLanguage') @Watch('onAppearanceChanged') systemLanguage: string = 'zh-CN';
+  @StorageLink('overallFontScale') overallFontScale: number = 1;
+  @StorageLink('capsuleTextSize') capsuleTextSize: string = 'medium';
+  @StorageLink('capsuleTextBold') capsuleTextBold: boolean = false;
+  @StorageLink('uiLanguage') uiLanguage: string = 'system';
+  @StorageLink('systemLanguage') systemLanguage: string = 'zh-CN';
   @StorageLink('systemColorMode') systemColorMode: number =
     ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT;
 
-  @State memberCount: number = 0;
-  @State hovered: boolean = false;
-  @State contextMenuPapers: PaperData[] = [];
-  @State contextMenuOpen: boolean = false;
+  @State members: PaperData[] = [];
+  @State hoveredPaperId: string = '';
+  @State masterHovered: boolean = false;
 
   private layoutRunning: boolean = false;
   private layoutPending: boolean = false;
@@ -59,6 +68,7 @@ struct MasterCapsule {
   private dragStartTop: number = 48;
   private dragMoved: boolean = false;
   private suppressClickUntil: number = 0;
+  private lastGeometrySignature: string = '';
 
   aboutToAppear(): void {
     this.refreshMembers();
@@ -76,20 +86,11 @@ struct MasterCapsule {
     this.requestWindowLayout();
   }
 
-  private onAppearanceChanged(): void {
-    this.refreshContextMenuPapers();
-    this.requestWindowLayout();
-  }
-
   private refreshMembers(): void {
-    const state: AppState = PaperStore.loadState();
-    const members: PaperData[] = PaperStore.listEdgeCapsulePapers();
-    this.refreshContextMenuPapers();
-    this.memberCount = members.length;
-    if (!state.useCapsuleMode || !state.useDeepCapsuleMode || !state.useMasterCapsule ||
-      members.length === 0) {
+    this.members = PaperStore.listEdgeCapsulePapers().slice();
+    if (!this.useCapsuleMode || !this.useDeepCapsuleMode || this.members.length === 0) {
       DesktopShell.syncCapsules(this.hostContext()).catch((error: Error): void => {
-        console.warn('close stale master capsule failed: ' + error.message);
+        console.warn('close stale capsule host failed: ' + error.message);
       });
       return;
     }
@@ -109,7 +110,7 @@ struct MasterCapsule {
       }
     }).catch((error: Error): void => {
       this.layoutRunning = false;
-      console.warn('layout master capsule failed: ' + error.message);
+      console.warn('layout capsule host failed: ' + error.message);
     });
   }
 
@@ -122,7 +123,7 @@ struct MasterCapsule {
 
   private async syncWindowGeometry(): Promise<void> {
     const win: window.Window | undefined = AppStorage.get<window.Window>('masterCapsuleWindow');
-    if (win === undefined || this.memberCount <= 0) {
+    if (win === undefined || this.members.length === 0) {
       return;
     }
     let uiContext: UIContext;
@@ -131,7 +132,7 @@ struct MasterCapsule {
       uiContext = win.getUIContext();
       targetDisplay = display.getDefaultDisplaySync();
     } catch (error) {
-      console.warn('query master capsule display failed: ' + String(error));
+      console.warn('query capsule host display failed: ' + String(error));
       return;
     }
     let area: display.Rect;
@@ -146,35 +147,58 @@ struct MasterCapsule {
       };
     }
 
+    const state: AppState = PaperStore.loadState();
+    const includeMaster: boolean = state.useMasterCapsule;
     const areaHeightVp: number = uiContext.px2vp(area.height);
     this.availableHeightVp = areaHeightVp;
-    const normalizedTop: number = normalizeCapsuleStartTopMargin(this.capsuleStartTop, areaHeightVp,
-      this.memberCount, this.capsuleGap, true);
-    if (Math.abs(normalizedTop - this.capsuleStartTop) > 0.1) {
+    const normalizedTop: number = normalizeCapsuleStartTopMargin(state.capsuleStartTop, areaHeightVp,
+      this.members.length, state.capsuleGap, includeMaster);
+    if (Math.abs(normalizedTop - state.capsuleStartTop) > 0.1) {
       PaperStore.setCapsuleStartTop(normalizedTop);
     }
-    const slotTop: number = capsuleSlotTop(normalizedTop, 0, this.capsuleGap, false);
-    const widthVp: number = this.calculateMasterWidth(uiContext);
+    const widthVp: number = this.hostWidthVp(includeMaster);
+    const slotCount: number = this.members.length + (includeMaster ? 1 : 0);
+    const heightVp: number = slotCount * CAPSULE_HEIGHT + Math.max(0, slotCount - 1) * state.capsuleGap;
     const widthPx: number = Math.round(uiContext.vp2px(widthVp));
-    const heightPx: number = Math.round(uiContext.vp2px(CAPSULE_HEIGHT));
+    const heightPx: number = Math.round(uiContext.vp2px(heightVp));
     const xPx: number = Math.round(area.left + area.width - widthPx);
-    const yPx: number = Math.round(area.top + uiContext.vp2px(slotTop));
+    const yPx: number = Math.round(area.top + uiContext.vp2px(normalizedTop));
+    const signature: string = [xPx, yPx, widthPx, heightPx].join(':');
+    if (signature === this.lastGeometrySignature) {
+      return;
+    }
+
     try {
       await win.setWindowLimits({
         minWidth: Math.round(uiContext.vp2px(CAPSULE_PLATFORM_MIN_WIDTH)),
-        minHeight: heightPx,
+        minHeight: Math.round(uiContext.vp2px(CAPSULE_HEIGHT)),
         maxWidth: Math.max(widthPx, area.width),
         maxHeight: Math.max(heightPx, area.height)
       }, true);
     } catch (error) {
-      console.warn('set master capsule limits failed: ' + String(error));
+      console.warn('set capsule host limits failed: ' + String(error));
     }
     try {
+      await win.resizeAsync(widthPx, heightPx);
+      await win.moveWindowToAsync(xPx, yPx);
+    } catch (error) {
+      console.warn('async capsule host geometry failed, falling back: ' + String(error));
       await win.resize(widthPx, heightPx);
       await win.moveWindowTo(xPx, yPx);
-    } catch (error) {
-      console.warn('place master capsule failed: ' + String(error));
     }
+    this.lastGeometrySignature = signature;
+  }
+
+  private hostWidthVp(includeMaster: boolean = this.useMasterCapsule): number {
+    let width: number = includeMaster ? MASTER_ROW_WIDTH : CAPSULE_MIN_WIDTH;
+    for (let i: number = 0; i < this.members.length; i++) {
+      width = Math.max(width, this.capsuleWidth(this.members[i]));
+    }
+    return Math.max(CAPSULE_MIN_WIDTH, Math.min(CAPSULE_MAX_WIDTH, width));
+  }
+
+  private capsuleWidth(paper: PaperData): number {
+    return Math.max(CAPSULE_MIN_WIDTH, Math.min(CAPSULE_MAX_WIDTH, paper.capsuleWidth));
   }
 
   private hostContext(): common.UIAbilityContext {
@@ -182,17 +206,11 @@ struct MasterCapsule {
   }
 
   private toggleQueueRetraction(): void {
-    if (Date.now() < this.suppressClickUntil) {
-      return;
-    }
-    if (this.memberCount <= 0) {
+    if (Date.now() < this.suppressClickUntil || this.members.length === 0) {
       return;
     }
     const action: string = resolveMasterToggleAction(this.capsuleCollapseAllActive);
     PaperStore.setCapsuleCollapseAllActive(action === MASTER_ACTION_RETRACT);
-    DesktopShell.syncCapsules(this.hostContext()).catch((error: Error): void => {
-      console.warn('sync capsule retraction failed: ' + error.message);
-    });
   }
 
   private beginVerticalMove(): void {
@@ -215,7 +233,7 @@ struct MasterCapsule {
     }
     const areaHeight: number = this.availableHeightVp > 0 ? this.availableHeightVp : fallbackHeight;
     const nextTop: number = normalizeCapsuleStartTopMargin(this.dragStartTop + event.offsetY, areaHeight,
-      this.memberCount, this.capsuleGap, true);
+      this.members.length, this.capsuleGap, this.useMasterCapsule);
     if (Math.abs(nextTop - this.capsuleStartTop) > 0.1) {
       PaperStore.setCapsuleStartTop(nextTop);
     }
@@ -227,68 +245,44 @@ struct MasterCapsule {
       this.dragMoved = false;
     }
     PaperStore.flushNow();
-    DesktopShell.syncCapsules(this.hostContext()).catch((error: Error): void => {
-      console.warn('sync moved capsule queue failed: ' + error.message);
-    });
   }
 
-  private createPaper(type: string): void {
-    DesktopShell.createPaper(this.hostContext(), type).catch((error: Error): void => {
-      console.warn('create paper from master capsule failed: ' + error.message);
-    });
-  }
-
-  private showAll(): void {
-    DesktopShell.showAll(this.hostContext()).catch((error: Error): void => {
-      console.warn('show papers from master capsule failed: ' + error.message);
-    });
-  }
-
-  private hideAll(): void {
-    DesktopShell.hideAll(this.hostContext()).catch((error: Error): void => {
-      console.warn('hide papers from master capsule failed: ' + error.message);
-    });
-  }
-
-  private refreshContextMenuPapers(): void {
-    // The Windows master capsule reuses the live tray menu. Keep the HarmonyOS
-    // equivalent backed by a fresh store read instead of the queue-only member list.
-    this.contextMenuPapers = PaperStore.listPapers();
-  }
-
-  private setContextMenuOpen(open: boolean): void {
-    this.contextMenuOpen = open;
-    if (open) {
-      this.refreshContextMenuPapers();
-    }
-  }
-
-  private setPaperVisibility(paperId: string, visible: boolean): void {
-    this.setPaperVisibilityAsync(paperId, visible).catch((error: Error): void => {
-      console.warn('toggle paper visibility from master capsule failed: ' + error.message);
-    });
-  }
-
-  private async setPaperVisibilityAsync(paperId: string, visible: boolean): Promise<void> {
+  private activatePaper(paperId: string): void {
     const latest: PaperData | null = PaperStore.getPaper(paperId);
-    if (latest === null || latest.isVisible === visible) {
-      this.refreshContextMenuPapers();
+    if (latest === null) {
       return;
     }
-    if (!visible) {
-      await DesktopShell.hidePaper(this.hostContext(), paperId);
+    const action: string = resolveEdgeActivateAction(latest.isCollapsed,
+      this.collapseExpandedEdgeCapsuleOnClick);
+    if (action === PAPER_ACTION_EXPAND) {
+      DesktopShell.setPaperCollapsed(this.hostContext(), latest.id, false);
+    } else if (action === PAPER_ACTION_COLLAPSE) {
+      DesktopShell.setPaperCollapsed(this.hostContext(), latest.id, true);
     } else {
-      PaperStore.setPaperVisible(paperId, true);
-      await DesktopShell.startPaper(this.hostContext(), paperId);
-      await DesktopShell.syncCapsules(this.hostContext());
+      DesktopShell.startPaper(this.hostContext(), latest.id, PAPER_COMMAND_SHOW)
+        .then((_started: boolean): Promise<boolean> => DesktopShell.syncCapsules(this.hostContext()))
+        .catch((error: Error): void => console.warn('activate capsule paper failed: ' + error.message));
     }
-    this.refreshContextMenuPapers();
+  }
+
+  private hidePaper(paperId: string): void {
+    DesktopShell.hidePaper(this.hostContext(), paperId).catch((error: Error): void => {
+      console.warn('hide capsule paper failed: ' + error.message);
+    });
+  }
+
+  private togglePaperCollapsed(paperId: string): void {
+    const latest: PaperData | null = PaperStore.getPaper(paperId);
+    if (latest === null) {
+      return;
+    }
+    DesktopShell.setPaperCollapsed(this.hostContext(), latest.id, !latest.isCollapsed)
+      .catch((error: Error): void => console.warn('toggle capsule paper failed: ' + error.message));
   }
 
   private deletePaper(paperId: string): void {
     const latest: PaperData | null = PaperStore.getPaper(paperId);
     if (latest === null) {
-      this.refreshContextMenuPapers();
       return;
     }
     if (isPaperEmpty(latest)) {
@@ -299,11 +293,7 @@ struct MasterCapsule {
       title: this.text('dialog.deletePaperTitle'),
       message: this.text('dialog.deletePaperMessage'),
       autoCancel: true,
-      primaryButton: {
-        value: this.text('action.cancel'),
-        action: (): void => {
-        }
-      },
+      primaryButton: { value: this.text('action.cancel'), action: (): void => {} },
       secondaryButton: {
         value: this.text('action.deletePaper'),
         fontColor: this.palette().danger,
@@ -313,24 +303,38 @@ struct MasterCapsule {
   }
 
   private performDeletePaper(paperId: string): void {
-    PaperStore.flushNow();
-    DesktopShell.deletePaper(this.hostContext(), paperId).then((): void => {
-      this.refreshMembers();
-    }).catch((error: Error): void => {
-      console.warn('delete paper from master capsule failed: ' + error.message);
-      this.refreshContextMenuPapers();
+    DesktopShell.deletePaper(this.hostContext(), paperId).catch((error: Error): void => {
+      console.warn('delete capsule paper failed: ' + error.message);
+    });
+  }
+
+  private createPaper(type: string): void {
+    DesktopShell.createPaper(this.hostContext(), type).catch((error: Error): void => {
+      console.warn('create paper from capsule host failed: ' + error.message);
+    });
+  }
+
+  private showAll(): void {
+    DesktopShell.showAll(this.hostContext()).catch((error: Error): void => {
+      console.warn('show papers from capsule host failed: ' + error.message);
+    });
+  }
+
+  private hideAll(): void {
+    DesktopShell.hideAll(this.hostContext()).catch((error: Error): void => {
+      console.warn('hide papers from capsule host failed: ' + error.message);
     });
   }
 
   private openSettings(): void {
     DesktopShell.openSettings(this.hostContext()).catch((error: Error): void => {
-      console.warn('open settings from master capsule failed: ' + error.message);
+      console.warn('open settings from capsule host failed: ' + error.message);
     });
   }
 
   private exitApplication(): void {
     DesktopShell.exitApplication(this.hostContext()).catch((error: Error): void => {
-      console.warn('exit PaperTodo from master capsule failed: ' + error.message);
+      console.warn('exit PaperTodo from capsule host failed: ' + error.message);
     });
   }
 
@@ -359,23 +363,15 @@ struct MasterCapsule {
   }
 
   private fontWeight(): FontWeight {
-    return this.capsuleTextBold ? FontWeight.Bold : FontWeight.Medium;
+    return this.capsuleTextBold ? FontWeight.Bold : FontWeight.Normal;
   }
 
-  private stateGlyph(): string {
-    return this.capsuleCollapseAllActive ? '▸' : '▾';
-  }
-
-  private expandedLabel(): string {
-    return this.withoutStateGlyph(this.text('capsule.retractQueue'));
-  }
-
-  private currentLabel(): string {
+  private currentMasterLabel(): string {
     if (!this.capsuleCollapseAllActive) {
-      return this.expandedLabel();
+      return this.withoutStateGlyph(this.text('capsule.retractQueue'));
     }
     return this.withoutStateGlyph(
-      formatText(this.text('capsule.retractedCount'), 'count', this.memberCount.toString()));
+      formatText(this.text('capsule.retractedCount'), 'count', this.members.length.toString()));
   }
 
   private withoutStateGlyph(value: string): string {
@@ -385,52 +381,33 @@ struct MasterCapsule {
     return value.trim();
   }
 
-  private calculateMasterWidth(uiContext: UIContext): number {
-    const glyphSize: number = Math.round(12 * this.overallFontScale * 10) / 10;
-    const glyphWidth: number = Math.max(
-      this.measureTextWidth(uiContext, '▾', glyphSize, FontWeight.Bold),
-      this.measureTextWidth(uiContext, '▸', glyphSize, FontWeight.Bold));
-    const labelWidth: number = Math.max(
-      this.measureTextWidth(uiContext, this.expandedLabel(), this.fontSize(), this.fontWeight()),
-      this.measureTextWidth(uiContext, this.currentLabel(), this.fontSize(), this.fontWeight()));
-    const desired: number = Math.ceil(5 + glyphWidth + 4 + labelWidth + 5 + 1);
-    return Math.max(CAPSULE_MIN_WIDTH, Math.min(CAPSULE_MAX_WIDTH, desired));
-  }
-
-  private measureTextWidth(uiContext: UIContext, value: string, fontSize: number,
-    fontWeight: FontWeight): number {
-    let width: number = value.length * fontSize;
-    try {
-      width = uiContext.px2vp(uiContext.getMeasureUtils().measureText({
-        textContent: value,
-        fontSize: fontSize,
-        fontWeight: fontWeight
-      }));
-    } catch (error) {
-      console.warn('measure master capsule text failed: ' + String(error));
+  private capsuleTitle(paper: PaperData): string {
+    const value: string = effectivePaperTitle(paper, PaperStore.listPapers(), this.uiLanguage, this.systemLanguage);
+    if (this.edgeCapsuleTitleCharacterLimit <= 0) {
+      return value;
     }
-    return width;
+    const limit: number = Math.max(2, Math.min(20, Math.round(this.edgeCapsuleTitleCharacterLimit)));
+    return value.length > limit ? value.substring(0, limit) + '…' : value;
   }
 
-  private paperMenuLabel(paper: PaperData): string {
-    const papers: PaperData[] = this.contextMenuPapers;
-    const icon: string = paper.type === PAPER_TYPE_NOTE ? '✎' : '☑';
-    return icon + '  ' + effectivePaperTitle(paper, papers, this.uiLanguage, this.systemLanguage);
+  private capsuleTypeGlyph(paper: PaperData): string {
+    return paper.type === PAPER_TYPE_NOTE ? '✎' : '☑';
+  }
+
+  private capsuleOffsetX(paper: PaperData): number {
+    const width: number = this.capsuleWidth(paper);
+    if (this.capsuleCollapseAllActive) {
+      return width;
+    }
+    if (this.hideEdgeCapsuleCloseButtonOnHover ||
+      (this.hoveredPaperId !== paper.id && paper.isCollapsed)) {
+      return CAPSULE_CLOSE_WIDTH;
+    }
+    return 0;
   }
 
   private text(key: string): string {
     return tForSystem(this.uiLanguage, this.systemLanguage, key);
-  }
-
-  @Builder
-  private PaperActionsMenu(paper: PaperData) {
-    Menu() {
-      MenuItem({ content: this.text(paper.isVisible ? 'action.hide' : 'action.show') })
-        .onClick((): void => this.setPaperVisibility(paper.id, !paper.isVisible))
-      MenuItem({ content: this.text('action.deletePaper') })
-        .contentFontColor(this.palette().danger)
-        .onClick((): void => this.deletePaper(paper.id))
-    }
   }
 
   @Builder
@@ -448,56 +425,138 @@ struct MasterCapsule {
         .onClick((): void => this.openSettings())
       MenuItem({ content: this.text('action.exit') })
         .onClick((): void => this.exitApplication())
-      ForEach(this.contextMenuPapers, (paper: PaperData) => {
-        MenuItem({
-          content: this.paperMenuLabel(paper),
-          builder: () => {
-            this.PaperActionsMenu(paper)
-          }
-        })
-          .selected(paper.isVisible)
-          .selectIcon(true)
-      }, (paper: PaperData): string => paper.id)
     }
   }
 
-  build() {
-    Row({ space: 4 }) {
-      Text(this.stateGlyph())
-        .fontSize(Math.round(12 * this.overallFontScale * 10) / 10)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(this.palette().text)
-      Text(this.currentLabel())
+  @Builder
+  private CapsuleContextMenu(paper: PaperData) {
+    Menu() {
+      MenuItem({ content: this.text('action.settings') })
+        .onClick((): void => this.openSettings())
+      MenuItem({ content: this.text(paper.isCollapsed ? 'action.expand' : 'action.collapse') })
+        .onClick((): void => this.togglePaperCollapsed(paper.id))
+      MenuItem({ content: this.text('action.hide') })
+        .onClick((): void => this.hidePaper(paper.id))
+      MenuItem({ content: this.text('action.deletePaper') })
+        .contentFontColor(this.palette().danger)
+        .onClick((): void => this.deletePaper(paper.id))
+    }
+  }
+
+  @Builder
+  private MasterRow() {
+    Row() {
+      Row({ space: 4 }) {
+        Text(this.capsuleCollapseAllActive ? '▸' : '▾')
+          .fontSize(Math.round(12 * this.overallFontScale * 10) / 10)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(this.palette().text)
+        Text(this.currentMasterLabel())
+          .layoutWeight(1)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .fontSize(this.fontSize())
+          .fontWeight(this.capsuleTextBold ? FontWeight.Bold : FontWeight.Medium)
+          .fontColor(this.palette().muted)
+      }
+      .width(MASTER_ROW_WIDTH)
+      .height(30)
+      .padding({ left: 7, right: 7 })
+      .backgroundColor(this.masterHovered ? this.palette().input : this.palette().paper)
+      .border({ width: 1, color: this.palette().border })
+      .borderRadius({ topLeft: 15, bottomLeft: 15, topRight: 0, bottomRight: 0 })
+      .onHover((hovered: boolean): void => {
+        this.masterHovered = hovered;
+      })
+      .onClick((): void => this.toggleQueueRetraction())
+      .gesture(
+        PanGesture({ direction: PanDirection.Vertical })
+          .onActionStart((): void => this.beginVerticalMove())
+          .onActionUpdate((event: GestureEvent): void => this.updateVerticalMove(event))
+          .onActionEnd((): void => this.endVerticalMove())
+          .onActionCancel((): void => this.endVerticalMove())
+      )
+      .bindContextMenu(() => {
+        this.MasterContextMenu()
+      }, ResponseType.RightClick)
+    }
+    .width('100%')
+    .height(CAPSULE_HEIGHT)
+    .justifyContent(FlexAlign.End)
+    .padding({ top: 8, bottom: 8 })
+  }
+
+  @Builder
+  private CapsuleRow(paper: PaperData) {
+    Row() {
+      Row() {
+        Row({ space: 4 }) {
+          Text(this.capsuleTypeGlyph(paper))
+            .fontSize(this.fontSize() + 1)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.palette().text)
+          Text(this.capsuleTitle(paper))
+            .layoutWeight(1)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .fontSize(this.fontSize())
+            .fontWeight(this.fontWeight())
+            .fontColor(this.palette().text)
+        }
         .layoutWeight(1)
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .textAlign(TextAlign.Start)
-        .fontSize(this.fontSize())
-        .fontWeight(this.fontWeight())
-        .fontColor(this.palette().muted)
+        .height('100%')
+        .padding({ left: 9, right: 5 })
+        .onClick((): void => this.activatePaper(paper.id))
+
+        Stack({ alignContent: Alignment.Center }) {
+          Text('×')
+            .fontSize(11)
+            .fontColor(this.palette().muted)
+        }
+        .width(CAPSULE_CLOSE_WIDTH)
+        .height('100%')
+        .visibility(this.hideEdgeCapsuleCloseButtonOnHover ? Visibility.Hidden : Visibility.Visible)
+        .border({ width: { left: 1 }, color: this.palette().border })
+        .onClick((): void => this.hidePaper(paper.id))
+      }
+      .width(this.capsuleWidth(paper))
+      .height(30)
+      .translate({ x: this.capsuleOffsetX(paper) })
+      .opacity(this.capsuleCollapseAllActive ? 0 : 1)
+      .animation({ duration: this.enableAnimations ? 150 : 0, curve: Curve.EaseOut })
+      .backgroundColor(this.palette().paper)
+      .border({ width: 1, color: paper.isCollapsed ? this.palette().border : this.palette().accent })
+      .borderRadius({ topLeft: 15, bottomLeft: 15, topRight: 0, bottomRight: 0 })
+      .onHover((hovered: boolean): void => {
+        if (hovered) {
+          this.hoveredPaperId = paper.id;
+        } else if (this.hoveredPaperId === paper.id) {
+          this.hoveredPaperId = '';
+        }
+      })
+      .bindContextMenu(() => {
+        this.CapsuleContextMenu(paper)
+      }, ResponseType.RightClick)
+    }
+    .width('100%')
+    .height(CAPSULE_HEIGHT)
+    .justifyContent(FlexAlign.End)
+    .padding({ top: 8, bottom: 8 })
+  }
+
+  build() {
+    Column({ space: this.capsuleGap }) {
+      if (this.useMasterCapsule) {
+        this.MasterRow()
+      }
+      ForEach(this.members, (paper: PaperData) => {
+        this.CapsuleRow(paper)
+      }, (paper: PaperData): string => paper.id)
     }
     .width('100%')
     .height('100%')
-    .padding({ left: 5, right: 5 })
-    .backgroundColor(this.hovered ? this.palette().input : this.palette().paper)
-    .border({ width: 1, color: this.palette().border })
-    .borderRadius({ topLeft: 23, bottomLeft: 23, topRight: 0, bottomRight: 0 })
-    .onHover((isHover: boolean): void => {
-      this.hovered = isHover;
-    })
-    .onClick((): void => this.toggleQueueRetraction())
-    .gesture(
-      PanGesture({ direction: PanDirection.Vertical })
-        .onActionStart((): void => this.beginVerticalMove())
-        .onActionUpdate((event: GestureEvent): void => this.updateVerticalMove(event))
-        .onActionEnd((): void => this.endVerticalMove())
-        .onActionCancel((): void => this.endVerticalMove())
-    )
-    .bindContextMenu(() => {
-      this.MasterContextMenu()
-    }, ResponseType.RightClick, {
-      onWillAppear: (): void => this.setContextMenuOpen(true),
-      onDisappear: (): void => this.setContextMenuOpen(false)
-    })
+    .alignItems(HorizontalAlign.End)
+    .clip(true)
+    .backgroundColor(Color.Transparent)
   }
 }
