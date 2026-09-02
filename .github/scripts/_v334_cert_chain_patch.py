@@ -127,8 +127,8 @@ if text.count(old_export) != 1:
     raise SystemExit(f'expected one post-AGC PKCS12 rebuild, found {text.count(old_export)}')
 text = text.replace(old_export, '\n', 1)
 
-old_app_cert = '    -appCertFile "$certificate_pem" \\\'
-new_app_cert = '    -appCertFile "$certificate_raw" \\\'
+old_app_cert = '    -appCertFile "$certificate_pem"'
+new_app_cert = '    -appCertFile "$certificate_raw"'
 if text.count(old_app_cert) != 1:
     raise SystemExit(f'expected one appCertFile line, found {text.count(old_app_cert)}')
 text = text.replace(old_app_cert, new_app_cert, 1)
