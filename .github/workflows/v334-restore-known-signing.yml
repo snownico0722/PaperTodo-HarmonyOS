@@ -1,0 +1,32 @@
+name: V334 Restore Proven Signing
+
+on:
+  push:
+    branches:
+      - fix/v334-rolling-release-certs
+
+permissions:
+  contents: write
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Restore proven one-release signing implementation
+        shell: bash
+        run: git show 8241baba90c79fcaefea49c71f8fc55dbb63c432:.github/scripts/agc-release-sign.sh > .github/scripts/agc-release-sign.sh
+      - name: Commit restore and remove helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "PaperTodo CI"
+          git config user.email "actions@users.noreply.github.com"
+          git rm .github/workflows/v334-restore-known-signing.yml
+          git add .github/scripts/agc-release-sign.sh
+          bash -n .github/scripts/agc-release-sign.sh
+          git diff --check
+          git commit -m "ci: restore proven one-release AGC signing path"
+          git push origin HEAD:fix/v334-rolling-release-certs
