@@ -17,6 +17,9 @@ export default class EntryAbility extends UIAbility {
   private hostWindow: window.Window | null = null;
   private launchGeneration: number = 0;
   private recoveryVisible: boolean = false;
+  private bootstrapComplete: boolean = false;
+  private reactivationInFlight: boolean = false;
+  private lastReactivationAt: number = 0;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     PaperStore.initialize(this.context);
@@ -26,10 +29,7 @@ export default class EntryAbility extends UIAbility {
   }
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    const generation: number = ++this.launchGeneration;
-    this.handleLauncherReactivation(generation).catch((error: Error): void => {
-      console.error('handle launcher reactivation failed: ' + error.message);
-    });
+    this.requestLauncherReactivation();
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
@@ -49,6 +49,9 @@ export default class EntryAbility extends UIAbility {
 
   onForeground(): void {
     this.applyHiddenHostStyle();
+    // On PC/2-in-1, bringing an existing mission to the front is a real
+    // activation path of its own. Do not depend on onNewWant alone.
+    this.requestLauncherReactivation();
   }
 
   onConfigurationUpdate(config: Configuration): void {
@@ -116,10 +119,29 @@ export default class EntryAbility extends UIAbility {
       }
     }
 
-    // Keep this singleton as an invisible launcher target. Terminating it
-    // makes a taskbar/launcher click cold-bootstrap the app again instead of
-    // delivering onNewWant, so Settings can never be reached from that icon.
+    // Cold-start foreground is not a taskbar request. Only after bootstrap is
+    // complete do subsequent foreground transitions mean "open Settings".
+    this.bootstrapComplete = true;
     await this.hideLauncherHost();
+  }
+
+  private requestLauncherReactivation(): void {
+    if (!this.bootstrapComplete || this.recoveryVisible) {
+      return;
+    }
+    const now: number = Date.now();
+    if (this.reactivationInFlight || now - this.lastReactivationAt < 300) {
+      return;
+    }
+    this.reactivationInFlight = true;
+    this.lastReactivationAt = now;
+    const generation: number = ++this.launchGeneration;
+    this.handleLauncherReactivation(generation).then((): void => {
+      this.reactivationInFlight = false;
+    }).catch((error: Error): void => {
+      this.reactivationInFlight = false;
+      console.error('handle launcher reactivation failed: ' + error.message);
+    });
   }
 
   private async handleLauncherReactivation(generation: number): Promise<void> {
@@ -153,10 +175,6 @@ export default class EntryAbility extends UIAbility {
     try {
       await this.context.hideAbility();
     } catch (error) {
-      // hideAbility is available on PC/2-in-1 only after the app has a status
-      // bar item. If the status-bar service is unavailable, keeping this host
-      // transparent/non-focusable is still preferable to terminating the
-      // singleton and losing taskbar reactivation semantics.
       console.warn('hide launcher host failed: ' + String(error));
     }
   }

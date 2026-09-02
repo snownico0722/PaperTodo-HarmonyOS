@@ -74,7 +74,7 @@ export class DesktopShell {
       await context.startAbility(want, options);
       return true;
     } catch (error) {
-      console.error('start master capsule failed: ' + String(error));
+      console.error('start capsule host failed: ' + String(error));
       return false;
     }
   }
@@ -111,8 +111,6 @@ export class DesktopShell {
     };
     try {
       await context.startAbility(want, options);
-      // Cold starts on 2-in-1 devices can take several seconds before the
-      // hidden attached ability finishes creating its host WindowStage.
       for (let attempt: number = 0; attempt < 30; attempt++) {
         if (DesktopShell.isResidentReady()) {
           return true;
@@ -237,9 +235,12 @@ export class DesktopShell {
       PaperStore.setCapsuleCollapseAllActive(false);
     }
     const enabled: boolean = state.useCapsuleMode && state.useDeepCapsuleMode;
-    const hasMaster: boolean = enabled && state.useMasterCapsule && members.length > 0;
+
+    // One top-level window now hosts the master row and every ordinary edge row.
+    // The host is required even if the optional master row itself is disabled.
+    const hasCapsuleHost: boolean = enabled && members.length > 0;
     let capsuleReachable: boolean = false;
-    if (hasMaster) {
+    if (hasCapsuleHost) {
       capsuleReachable = await DesktopShell.startMaster(context, PAPER_COMMAND_SHOW);
     } else if (AppStorage.get<boolean>('masterCapsuleOpen') === true) {
       await DesktopShell.startMaster(context, PAPER_COMMAND_CLOSE);
@@ -250,11 +251,10 @@ export class DesktopShell {
     for (let i: number = 0; i < papers.length; i++) {
       const paper: PaperData = papers[i];
       const capsuleEligible: boolean = PaperStore.canPaperDisplayAsCapsule(paper);
-      const queueMember: boolean = enabled && capsuleEligible && paper.isVisible &&
-        (paper.isCollapsed || state.showDeepCapsuleWhileExpanded);
-      if (queueMember) {
-        operations.push(DesktopShell.startEdge(context, paper.id, PAPER_COMMAND_SHOW));
-      } else if (AppStorage.get<boolean>('edgeCapsuleOpen:' + paper.id) === true) {
+
+      // v3.3.1 created one specified UIAbility per ordinary capsule. Never create
+      // those missions again; only close a legacy instance if one is still alive.
+      if (AppStorage.get<boolean>('edgeCapsuleOpen:' + paper.id) === true) {
         operations.push(DesktopShell.startEdge(context, paper.id, PAPER_COMMAND_CLOSE));
       }
 
@@ -286,10 +286,6 @@ export class DesktopShell {
   }
 
   static async exitApplication(context: common.UIAbilityContext): Promise<void> {
-    // HarmonyOS has no normal API that terminates every specified UIAbility in
-    // one operation. An explicit user Exit therefore performs all durable and
-    // system-facing cleanup first, then clears the application's process/page
-    // stack as the final step.
     PaperStore.flushNow();
     AppStorage.setOrCreate<boolean>('applicationExitRequested', true);
     await TrayService.remove(context);
