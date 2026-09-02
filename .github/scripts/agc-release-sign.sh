@@ -318,15 +318,32 @@ normalize_certificate_pem() {
 verify_persistent_key_matches_certificate() {
   local key_file="$1"
   local cert_pem="$2"
-  local key_hash cert_hash
-  key_hash="$(openssl pkey -in "$key_file" -pubout -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
-  cert_hash="$(openssl x509 -in "$cert_pem" -pubkey -noout | \
-    openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
-  if [[ -z "$key_hash" || -z "$cert_hash" || "$key_hash" != "$cert_hash" ]]; then
-    echo 'Persistent release key no longer matches the AGC stable release certificate.' >&2
-    echo 'The protected AGC service-account key may have rotated; perform an explicit signing-identity migration.' >&2
-    exit 1
-  fi
+  RELEASE_KEY_FILE="$key_file" RELEASE_CERT_FILE="$cert_pem" node <<'NODE'
+  const crypto = require('crypto');
+  const fs = require('fs');
+  const privateKey = crypto.createPrivateKey(fs.readFileSync(process.env.RELEASE_KEY_FILE));
+  const certificate = new crypto.X509Certificate(fs.readFileSync(process.env.RELEASE_CERT_FILE));
+  const keyJwk = crypto.createPublicKey(privateKey).export({ format: 'jwk' });
+  const certJwk = certificate.publicKey.export({ format: 'jwk' });
+  const canonical = jwk => [
+    jwk.kty || '',
+    jwk.crv || '',
+    jwk.x || '',
+    jwk.y || '',
+    jwk.n || '',
+    jwk.e || ''
+  ].join(':');
+  const keyCanonical = canonical(keyJwk);
+  const certCanonical = canonical(certJwk);
+  if (keyCanonical !== certCanonical) {
+    const fingerprint = value => crypto.createHash('sha256').update(value).digest('hex');
+    console.error('Persistent release key does not match the AGC stable release certificate.');
+    console.error(`persistent_public_fingerprint=${fingerprint(keyCanonical)}`);
+    console.error(`agc_certificate_public_fingerprint=${fingerprint(certCanonical)}`);
+    console.error('Refusing to persist or use a mismatched release identity.');
+    process.exit(1);
+  }
+NODE
 }
 
 create_stable_certificate() {
