@@ -1,0 +1,42 @@
+name: V334 Canonical Key Patch
+
+on:
+  push:
+    branches:
+      - fix/v334-canonical-key-compare
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch release public-key comparison
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64
+          path = Path('.github/scripts/agc-release-sign.sh')
+          text = path.read_text()
+          start = text.index('verify_persistent_key_matches_certificate() {')
+          end = text.index('create_stable_certificate() {', start)
+          replacement = base64.b64decode('dmVyaWZ5X3BlcnNpc3RlbnRfa2V5X21hdGNoZXNfY2VydGlmaWNhdGUoKSB7CiAgbG9jYWwga2V5X2ZpbGU9IiQxIgogIGxvY2FsIGNlcnRfcGVtPSIkMiIKICBSRUxFQVNFX0tFWV9GSUxFPSIka2V5X2ZpbGUiIFJFTEVBU0VfQ0VSVF9GSUxFPSIkY2VydF9wZW0iIG5vZGUgPDwnTk9ERScKICBjb25zdCBjcnlwdG8gPSByZXF1aXJlKCdjcnlwdG8nKTsKICBjb25zdCBmcyA9IHJlcXVpcmUoJ2ZzJyk7CiAgY29uc3QgcHJpdmF0ZUtleSA9IGNyeXB0by5jcmVhdGVQcml2YXRlS2V5KGZzLnJlYWRGaWxlU3luYyhwcm9jZXNzLmVudi5SRUxFQVNFX0tFWV9GSUxFKSk7CiAgY29uc3QgY2VydGlmaWNhdGUgPSBuZXcgY3J5cHRvLlg1MDlDZXJ0aWZpY2F0ZShmcy5yZWFkRmlsZVN5bmMocHJvY2Vzcy5lbnYuUkVMRUFTRV9DRVJUX0ZJTEUpKTsKICBjb25zdCBrZXlKd2sgPSBjcnlwdG8uY3JlYXRlUHVibGljS2V5KHByaXZhdGVLZXkpLmV4cG9ydCh7IGZvcm1hdDogJ2p3aycgfSk7CiAgY29uc3QgY2VydEp3ayA9IGNlcnRpZmljYXRlLnB1YmxpY0tleS5leHBvcnQoeyBmb3JtYXQ6ICdqd2snIH0pOwogIGNvbnN0IGNhbm9uaWNhbCA9IGp3ayA9PiBbCiAgICBqd2sua3R5IHx8ICcnLAogICAgandrLmNydiB8fCAnJywKICAgIGp3ay54IHx8ICcnLAogICAgandrLnkgfHwgJycsCiAgICBqd2subiB8fCAnJywKICAgIGp3ay5lIHx8ICcnCiAgXS5qb2luKCc6Jyk7CiAgY29uc3Qga2V5Q2Fub25pY2FsID0gY2Fub25pY2FsKGtleUp3ayk7CiAgY29uc3QgY2VydENhbm9uaWNhbCA9IGNhbm9uaWNhbChjZXJ0SndrKTsKICBpZiAoa2V5Q2Fub25pY2FsICE9PSBjZXJ0Q2Fub25pY2FsKSB7CiAgICBjb25zdCBmaW5nZXJwcmludCA9IHZhbHVlID0+IGNyeXB0by5jcmVhdGVIYXNoKCdzaGEyNTYnKS51cGRhdGUodmFsdWUpLmRpZ2VzdCgnaGV4Jyk7CiAgICBjb25zb2xlLmVycm9yKCdQZXJzaXN0ZW50IHJlbGVhc2Uga2V5IGRvZXMgbm90IG1hdGNoIHRoZSBBR0Mgc3RhYmxlIHJlbGVhc2UgY2VydGlmaWNhdGUuJyk7CiAgICBjb25zb2xlLmVycm9yKGBwZXJzaXN0ZW50X3B1YmxpY19maW5nZXJwcmludD0ke2ZpbmdlcnByaW50KGtleUNhbm9uaWNhbCl9YCk7CiAgICBjb25zb2xlLmVycm9yKGBhZ2NfY2VydGlmaWNhdGVfcHVibGljX2ZpbmdlcnByaW50PSR7ZmluZ2VycHJpbnQoY2VydENhbm9uaWNhbCl9YCk7CiAgICBjb25zb2xlLmVycm9yKCdSZWZ1c2luZyB0byBwZXJzaXN0IG9yIHVzZSBhIG1pc21hdGNoZWQgcmVsZWFzZSBpZGVudGl0eS4nKTsKICAgIHByb2Nlc3MuZXhpdCgxKTsKICB9Ck5PREUKfQoK').decode()
+          path.write_text(text[:start] + replacement + text[end:])
+          PY
+      - name: Commit patch and remove helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "PaperTodo CI"
+          git config user.email "actions@users.noreply.github.com"
+          git rm .github/workflows/v334-canonical-key-patch.yml
+          git add .github/scripts/agc-release-sign.sh
+          bash -n .github/scripts/agc-release-sign.sh
+          git diff --check
+          git commit -m "ci: compare canonical AGC release public keys"
+          git push origin HEAD:fix/v334-canonical-key-compare
