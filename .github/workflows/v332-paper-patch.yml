@@ -1,0 +1,34 @@
+name: V332 Paper Patch
+
+on:
+  push:
+    branches:
+      - fix/v332-capsule-host
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, 'fix: use custom UDMF paper drag source') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch Paper association drag source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -c "import base64;exec(base64.b64decode('ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCnBhdGggPSBQYXRoKCJlbnRyeS9zcmMvbWFpbi9ldHMvcGFnZXMvUGFwZXIuZXRzIikKdGV4dCA9IHBhdGgucmVhZF90ZXh0KCkKc3RhcnRfbWFya2VyID0gIiAgICAgICAgICAgIFRleHQodGhpcy5pc1BhcGVyTGlua2VkKCkgPyAn4qa/JyA6ICfijJYnKVxuIgplbmRfbWFya2VyID0gIiAgICAgICAgICAgICAgLm9uRHJhZ1N0YXJ0KChldmVudDogRHJhZ0V2ZW50KTogRHJhZ0l0ZW1JbmZvID0+IHRoaXMuYmVnaW5QYXBlckxpbmtEcmFnKGV2ZW50KSlcbiIKc3RhcnQgPSB0ZXh0LmZpbmQoc3RhcnRfbWFya2VyKQppZiBzdGFydCA8IDA6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJwYXBlciBsaW5rIHN0YXJ0IG1hcmtlciBub3QgZm91bmQiKQplbmQwID0gdGV4dC5maW5kKGVuZF9tYXJrZXIsIHN0YXJ0KQppZiBlbmQwIDwgMDoKICAgIHJhaXNlIFN5c3RlbUV4aXQoInBhcGVyIGxpbmsgZW5kIG1hcmtlciBub3QgZm91bmQiKQplbmQgPSBlbmQwICsgbGVuKGVuZF9tYXJrZXIpCm5ldyA9ICIiIiAgICAgICAgICAgIFN0YWNrKHsgYWxpZ25Db250ZW50OiBBbGlnbm1lbnQuQ2VudGVyIH0pIHsKICAgICAgICAgICAgICBUZXh0KHRoaXMuaXNQYXBlckxpbmtlZCgpID8gJ+KmvycgOiAn4oyWJykKICAgICAgICAgICAgICAgIC5mb250U2l6ZSgxMykKICAgICAgICAgICAgICAgIC5mb250Q29sb3IodGhpcy50ZXh0Q29sb3IoKSkKICAgICAgICAgICAgICAgIC50ZXh0QWxpZ24oVGV4dEFsaWduLkNlbnRlcikKICAgICAgICAgICAgfQogICAgICAgICAgICAgIC5pZCgncGFwZXJfbGlua19kcmFnX2hhbmRsZScpCiAgICAgICAgICAgICAgLndpZHRoKDI2KQogICAgICAgICAgICAgIC5oZWlnaHQoMzApCiAgICAgICAgICAgICAgLmFjY2Vzc2liaWxpdHlUZXh0KHRoaXMudGV4dCgnbGluay50bycpKQogICAgICAgICAgICAgIC5kcmFnZ2FibGUodHJ1ZSkKICAgICAgICAgICAgICAuZHJhZ1ByZXZpZXcoJ3BhcGVyX2xpbmtfZHJhZ19oYW5kbGUnKQogICAgICAgICAgICAgIC5vbkRyYWdTdGFydCgoZXZlbnQ6IERyYWdFdmVudCk6IERyYWdJdGVtSW5mbyA9PiB0aGlzLmJlZ2luUGFwZXJMaW5rRHJhZyhldmVudCkpCiIiIgpwYXRoLndyaXRlX3RleHQodGV4dFs6c3RhcnRdICsgbmV3ICsgdGV4dFtlbmQ6XSkK'))"
+          git diff --check -- entry/src/main/ets/pages/Paper.ets
+      - name: Commit source patch and remove helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "PaperTodo CI"
+          git config user.email "actions@users.noreply.github.com"
+          git rm .github/workflows/v332-paper-patch.yml
+          git add entry/src/main/ets/pages/Paper.ets
+          git commit -m "fix: use custom UDMF paper drag source"
+          git push origin HEAD:fix/v332-capsule-host
