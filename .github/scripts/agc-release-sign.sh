@@ -305,26 +305,110 @@ download_profile() {
   curl --fail --location --silent --show-error "$url" --output "$output"
 }
 
-normalize_certificate_pem() {
-  local input="$1"
-  local output="$2"
-  if openssl x509 -in "$input" -noout >/dev/null 2>&1; then
-    openssl x509 -in "$input" -out "$output"
-  else
-    openssl x509 -inform DER -in "$input" -out "$output"
+public_key_hash_from_key() {
+  local key_file="$1"
+  openssl pkey -in "$key_file" -pubout -outform DER 2>/dev/null | sha256sum | awk '{print $1}'
+}
+
+public_key_hash_from_certificate() {
+  local cert_file="$1"
+  openssl x509 -in "$cert_file" -pubkey -noout 2>/dev/null | \
+    openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{print $1}'
+}
+
+verify_csr_matches_key() {
+  local key_file="$1"
+  local csr="$2"
+  local key_hash csr_hash
+  key_hash="$(public_key_hash_from_key "$key_file")"
+  csr_hash="$(openssl req -in "$csr" -pubkey -noout 2>/dev/null | \
+    openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
+  if [[ -z "$key_hash" || -z "$csr_hash" || "$key_hash" != "$csr_hash" ]]; then
+    echo 'Generated release CSR does not match the persistent release private key.' >&2
+    exit 1
   fi
 }
 
-verify_persistent_key_matches_certificate() {
+split_pem_certificates() {
+  local input="$1"
+  local output_dir="$2"
+  awk -v dir="$output_dir" '
+    /-----BEGIN CERTIFICATE-----/ {
+      n++;
+      file=sprintf("%s/cert-%02d.pem", dir, n)
+    }
+    file != "" { print > file }
+    /-----END CERTIFICATE-----/ {
+      close(file);
+      file=""
+    }
+  ' "$input"
+}
+
+extract_certificate_candidates() {
+  local input="$1"
+  local output_dir="$2"
+  mkdir -p "$output_dir"
+  rm -f "$output_dir"/cert-*.pem "$output_dir"/bundle.pem
+
+  if grep -a -q -- '-----BEGIN CERTIFICATE-----' "$input"; then
+    split_pem_certificates "$input" "$output_dir"
+  elif openssl x509 -inform DER -in "$input" -out "$output_dir/cert-01.pem" >/dev/null 2>&1; then
+    :
+  elif openssl pkcs7 -in "$input" -print_certs -out "$output_dir/bundle.pem" >/dev/null 2>&1; then
+    split_pem_certificates "$output_dir/bundle.pem" "$output_dir"
+  elif openssl pkcs7 -inform DER -in "$input" -print_certs -out "$output_dir/bundle.pem" >/dev/null 2>&1; then
+    split_pem_certificates "$output_dir/bundle.pem" "$output_dir"
+  else
+    echo 'Unable to parse the AGC certificate download as PEM, DER X.509, or PKCS#7.' >&2
+    exit 1
+  fi
+
+  shopt -s nullglob
+  local candidates=("$output_dir"/cert-*.pem)
+  shopt -u nullglob
+  if [[ ${#candidates[@]} -eq 0 ]]; then
+    echo 'AGC certificate download contained no X.509 certificate candidates.' >&2
+    exit 1
+  fi
+}
+
+select_matching_certificate() {
   local key_file="$1"
-  local cert_pem="$2"
-  local key_hash cert_hash
-  key_hash="$(openssl pkey -in "$key_file" -pubout -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
-  cert_hash="$(openssl x509 -in "$cert_pem" -pubkey -noout | \
-    openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
-  if [[ -z "$key_hash" || -z "$cert_hash" || "$key_hash" != "$cert_hash" ]]; then
-    echo 'Persistent release key no longer matches the AGC stable release certificate.' >&2
-    echo 'The protected AGC service-account key may have rotated; perform an explicit signing-identity migration.' >&2
+  local input="$2"
+  local output="$3"
+  local candidate_dir="$SIGN_DIR/certificate-candidates"
+  extract_certificate_candidates "$input" "$candidate_dir"
+
+  local key_hash matched=0 cert cert_hash subject
+  key_hash="$(public_key_hash_from_key "$key_file")"
+  [[ -n "$key_hash" ]] || { echo 'Unable to derive persistent release public-key hash.' >&2; exit 1; }
+
+  shopt -s nullglob
+  for cert in "$candidate_dir"/cert-*.pem; do
+    cert_hash="$(public_key_hash_from_certificate "$cert")"
+    subject="$(openssl x509 -in "$cert" -noout -subject 2>/dev/null || true)"
+    if [[ -n "$cert_hash" && "$cert_hash" == "$key_hash" ]]; then
+      if [[ "$matched" == '1' ]]; then
+        echo 'AGC certificate download contains multiple certificates matching the release private key.' >&2
+        exit 1
+      fi
+      cp "$cert" "$output"
+      matched=1
+      echo "Matched AGC release certificate leaf: $subject"
+    fi
+  done
+  shopt -u nullglob
+
+  if [[ "$matched" != '1' ]]; then
+    echo 'No certificate in the AGC download matches the persistent release private key.' >&2
+    echo 'Certificate subjects returned by AGC:' >&2
+    shopt -s nullglob
+    for cert in "$candidate_dir"/cert-*.pem; do
+      openssl x509 -in "$cert" -noout -subject -issuer >&2 || true
+    done
+    shopt -u nullglob
+    echo 'If a stable certificate already existed, the protected signing input may have rotated; otherwise inspect the AGC certificate container/CSR contract.' >&2
     exit 1
   fi
 }
@@ -408,8 +492,7 @@ resolve_persistent_identity() {
     }
     CREATED_CERT_ID="$cert_id"
     curl --fail --location --silent --show-error "$cert_url" --output "$certificate_raw"
-    normalize_certificate_pem "$certificate_raw" "$certificate_pem"
-    verify_persistent_key_matches_certificate "$key_file" "$certificate_pem"
+    select_matching_certificate "$key_file" "$certificate_raw" "$certificate_pem"
     stable_cert_count=1
     echo "Created persistent AGC release certificate: $STABLE_RESOURCE_NAME"
   else
@@ -417,8 +500,7 @@ resolve_persistent_identity() {
     cert_id="$(jq -r '.id // .certId // empty' <<<"$cert_record")"
     [[ -n "$cert_id" ]] || { echo 'Persistent certificate id missing.' >&2; exit 1; }
     download_certificate "$cert_record" "$certificate_raw"
-    normalize_certificate_pem "$certificate_raw" "$certificate_pem"
-    verify_persistent_key_matches_certificate "$key_file" "$certificate_pem"
+    select_matching_certificate "$key_file" "$certificate_raw" "$certificate_pem"
     echo "Reusing persistent AGC release certificate: $STABLE_RESOURCE_NAME"
   fi
 
@@ -470,6 +552,7 @@ sign_release() {
   openssl req -new -sha256 -key "$key_file" \
     -subj "/C=CN/O=PaperTodo/OU=Release/CN=$STABLE_KEY_ALIAS" \
     -out "$csr"
+  verify_csr_matches_key "$key_file" "$csr"
 
   local jwt
   jwt="$(create_jwt)"
