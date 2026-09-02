@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.3.2 — 2026-09-02
+
+第二轮 HarmonyOS PC / 2in1 真机回归修复。3.3.1 对窗口纠偏和 Text 拖拽的判断不成立，本版按平台真实行为做结构修复。
+
+- 右侧主胶囊与全部普通胶囊改由一个顶层 `MasterCapsuleAbility` 宿主窗口承载，不再为每张普通胶囊创建独立 `specified UIAbility` / mission。
+- 胶囊宿主窗口右边缘固定；主胶囊收起 / 展开仅通过 ArkUI 内部行的 `translate` / `opacity` 呈现，不再改变顶层窗口 X 或宽度。
+- 胶囊宿主几何优先使用 `resizeAsync()` / `moveWindowToAsync()`，并缓存最终目标矩形，避免异步 `resize` / `move` 调用互相覆盖造成来回飞动。
+- 纸片“绑定到其他”拖动柄由 `Text` 原生文本拖拽改为自定义 `Stack` 拖拽源，使用 `draggable(true)`、`dragPreview()` 和现有 UDMF `onDragStart` 数据协议。
+- 隐藏的 `EntryAbility` 在冷启动完成后同时处理 `onNewWant` 与 `onForeground`，任务栏 / mission 将现有应用带到前台时统一打开独立设置窗口。
+- 版本更新为 `3.3.2`（`versionCode: 3030200`，`buildVersion: 1`）。
+
 ## 3.3.1 — 2026-09-02
 
 本版本集中修复 3.3.0 HarmonyOS PC / 2in1 真机验证发现的窗口与顶栏回归，不新增产品范围。
