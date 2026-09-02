@@ -52,6 +52,13 @@ jobs:
           AGC_APP_ID: ${{ secrets.AGC_APP_ID }}
         run: bash .github/scripts/agc-release-sign.sh cleanup-stale
 
+      - name: Reclaim obsolete pre-main PaperTodo CI signing slot
+        shell: bash
+        env:
+          AGC_SERVICE_ACCOUNT_JSON: ${{ secrets.AGC_SERVICE_ACCOUNT_JSON }}
+          AGC_APP_ID: ${{ secrets.AGC_APP_ID }}
+        run: bash .github/scripts/agc-cleanup-legacy-ci.sh
+
       - name: Show read-only AGC release signing inventory
         shell: bash
         env:
