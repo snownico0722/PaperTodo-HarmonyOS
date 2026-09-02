@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 # AGC release certificates and profiles are account-level resources. Serialize
-# formal packages so concurrent runs cannot consume or replace the same quota.
+# formal packages so persistent release identity bootstrap/reuse cannot race.
 concurrency:
   group: harmonyos-formal-package
   cancel-in-progress: false
@@ -23,7 +23,7 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       startsWith(github.ref, 'refs/tags/v') ||
       (github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[formal-package]'))
-    name: Build, sign, and verify release APP
+    name: Test, build, sign, and verify release APP
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -38,7 +38,13 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Require AGC release signing credentials
+      - name: Validate release scripts
+        shell: bash
+        run: |
+          bash -n .github/scripts/agc-release-sign.sh
+          bash -n .github/scripts/agc-release-inventory.sh
+
+      - name: Require protected release signing inputs
         shell: bash
         env:
           AGC_SERVICE_ACCOUNT_JSON: ${{ secrets.AGC_SERVICE_ACCOUNT_JSON }}
@@ -51,20 +57,6 @@ jobs:
           AGC_SERVICE_ACCOUNT_JSON: ${{ secrets.AGC_SERVICE_ACCOUNT_JSON }}
           AGC_APP_ID: ${{ secrets.AGC_APP_ID }}
         run: bash .github/scripts/agc-release-sign.sh cleanup-stale
-
-      - name: Reclaim obsolete pre-main PaperTodo CI signing slot
-        shell: bash
-        env:
-          AGC_SERVICE_ACCOUNT_JSON: ${{ secrets.AGC_SERVICE_ACCOUNT_JSON }}
-          AGC_APP_ID: ${{ secrets.AGC_APP_ID }}
-        run: bash .github/scripts/agc-cleanup-legacy-ci.sh
-
-      - name: Show read-only AGC release signing inventory
-        shell: bash
-        env:
-          AGC_SERVICE_ACCOUNT_JSON: ${{ secrets.AGC_SERVICE_ACCOUNT_JSON }}
-          AGC_APP_ID: ${{ secrets.AGC_APP_ID }}
-        run: bash .github/scripts/agc-release-inventory.sh
 
       - name: Cache HarmonyOS Command Line Tools
         id: cache-tools
@@ -127,10 +119,13 @@ jobs:
       - name: Install dependencies
         run: ohpm install
 
+      - name: Run local unit tests
+        run: hvigorw test -p module=entry -p coverage=false --no-daemon
+
       - name: Assemble release APP
         run: hvigorw assembleApp --mode project -p product=default -p buildMode=release -p enableSignTask=false --no-daemon
 
-      - name: Create, sign, and verify AGC release APP
+      - name: Resolve, sign, and verify persistent AGC release identity
         shell: bash
         env:
           AGC_SERVICE_ACCOUNT_JSON: ${{ secrets.AGC_SERVICE_ACCOUNT_JSON }}
@@ -143,7 +138,7 @@ jobs:
         run: |
           set -euo pipefail
           SIGN_DIR="${RUNNER_TEMP}/papertodo-signing-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          for response in cert-response.json profile-response.json; do
+          for response in stable-cert-response.json stable-profile-response.json; do
             file="$SIGN_DIR/$response"
             if [[ -s "$file" ]]; then
               echo "--- $response ---"
