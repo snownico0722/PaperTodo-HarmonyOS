@@ -1,0 +1,25 @@
+name: V332 PR Compile
+on:
+  push:
+    branches:
+      - fix/v332-capsule-host
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      - uses: actions/cache@v4
+        id: cache-tools
+        with:
+          path: command-line-tools
+          key: ${{ runner.os }}-harmonyos-cli-6.1.0.816
+      - if: steps.cache-tools.outputs.cache-hit != 'true'
+        run: curl --fail --location --retry 3 --output tools.zip https://github.com/Okysu/harmony-auto-build/releases/download/commandline-tools-linux-x64-6.1.0.816/commandline-tools-linux-x64-6.1.0.816.zip && echo "4b21e8a4ce19fc7eb381425a570e936c80067b8a0bef9cdcfe8a49e4764038e2  tools.zip" | sha256sum --check - && unzip -q tools.zip && rm tools.zip
+      - run: echo "hwsdk.dir=$GITHUB_WORKSPACE/command-line-tools/sdk" > local.properties && echo "$GITHUB_WORKSPACE/command-line-tools/bin" >> "$GITHUB_PATH" && echo "OHPM_HOME=$GITHUB_WORKSPACE/command-line-tools/ohpm" >> "$GITHUB_ENV" && echo "HOS_SDK_HOME=$GITHUB_WORKSPACE/command-line-tools/sdk" >> "$GITHUB_ENV" && chmod -R +x "$GITHUB_WORKSPACE/command-line-tools/bin"
+      - run: ohpm install
+      - run: hvigorw assembleHap --mode module -p product=default -p buildMode=debug --no-daemon
