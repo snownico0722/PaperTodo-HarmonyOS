@@ -18,6 +18,7 @@ import {
   VISUAL_TEXT_SMALL
 } from '../common/Models';
 import { PaperStore } from '../common/PaperStore';
+import { CapsuleWindowMaskRow, applyCapsuleWindowMask } from '../common/CapsuleWindowMask';
 import { effectivePaperTitle } from '../common/PaperTitles';
 import {
   MASTER_ACTION_RETRACT,
@@ -62,7 +63,7 @@ struct MasterCapsule {
     ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT;
 
   @State members: PaperData[] = [];
-  @State hoveredPaperId: string = '';
+  @State @Watch('onLayoutChanged') hoveredPaperId: string = '';
   @State masterHovered: boolean = false;
   @State masterRowWidthVp: number = MASTER_ROW_INITIAL_WIDTH;
 
@@ -172,32 +173,32 @@ struct MasterCapsule {
       slotCount * CAPSULE_HEIGHT + Math.max(0, slotCount - 1) * state.capsuleGap);
     const widthPx: number = Math.round(uiContext.vp2px(widthVp));
     const heightPx: number = Math.round(uiContext.vp2px(heightVp));
-    const xPx: number = Math.round(area.left + area.width - widthPx);
+    const xPx: number = Math.round(targetDisplay.width - widthPx);
     const yPx: number = Math.round(area.top + uiContext.vp2px(normalizedTop));
     const signature: string = [xPx, yPx, widthPx, heightPx].join(':');
-    if (signature === this.lastGeometrySignature) {
-      return;
+    const geometryChanged: boolean = signature !== this.lastGeometrySignature;
+    if (geometryChanged) {
+      try {
+        await win.setWindowLimits({
+          minWidth: Math.round(uiContext.vp2px(CAPSULE_PLATFORM_MIN_WIDTH)),
+          minHeight: Math.round(uiContext.vp2px(CAPSULE_HEIGHT)),
+          maxWidth: Math.max(widthPx, targetDisplay.width),
+          maxHeight: Math.max(heightPx, area.height)
+        }, true);
+      } catch (error) {
+        console.warn('set capsule host limits failed: ' + String(error));
+      }
+      try {
+        await win.resizeAsync(widthPx, heightPx);
+        await win.moveWindowToAsync(xPx, yPx);
+      } catch (error) {
+        console.warn('async capsule host geometry failed, falling back: ' + String(error));
+        await win.resize(widthPx, heightPx);
+        await win.moveWindowTo(xPx, yPx);
+      }
+      this.lastGeometrySignature = signature;
     }
-
-    try {
-      await win.setWindowLimits({
-        minWidth: Math.round(uiContext.vp2px(CAPSULE_PLATFORM_MIN_WIDTH)),
-        minHeight: Math.round(uiContext.vp2px(CAPSULE_HEIGHT)),
-        maxWidth: Math.max(widthPx, area.width),
-        maxHeight: Math.max(heightPx, area.height)
-      }, true);
-    } catch (error) {
-      console.warn('set capsule host limits failed: ' + String(error));
-    }
-    try {
-      await win.resizeAsync(widthPx, heightPx);
-      await win.moveWindowToAsync(xPx, yPx);
-    } catch (error) {
-      console.warn('async capsule host geometry failed, falling back: ' + String(error));
-      await win.resize(widthPx, heightPx);
-      await win.moveWindowTo(xPx, yPx);
-    }
-    this.lastGeometrySignature = signature;
+    await this.syncNativeWindowMask(win, uiContext, widthPx, heightPx, state, includeMaster, queueRetracted);
   }
 
   private measureMasterRowWidth(uiContext: UIContext): number {
@@ -230,6 +231,46 @@ struct MasterCapsule {
 
   private capsuleWidth(paper: PaperData): number {
     return Math.max(CAPSULE_MIN_WIDTH, Math.min(CAPSULE_MAX_WIDTH, paper.capsuleWidth));
+  }
+
+
+  private async syncNativeWindowMask(win: window.Window, uiContext: UIContext, widthPx: number, heightPx: number,
+    state: AppState, includeMaster: boolean, queueRetracted: boolean): Promise<void> {
+    const rows: CapsuleWindowMaskRow[] = [];
+    const rowHeightVp: number = 30;
+    const rowTopInsetVp: number = (CAPSULE_HEIGHT - rowHeightVp) / 2;
+    const radiusVp: number = rowHeightVp / 2;
+    let slotIndex: number = 0;
+
+    if (includeMaster) {
+      rows.push({
+        topPx: uiContext.vp2px(rowTopInsetVp),
+        heightPx: uiContext.vp2px(rowHeightVp),
+        visibleWidthPx: uiContext.vp2px(this.masterRowWidthVp),
+        radiusPx: uiContext.vp2px(radiusVp)
+      });
+      slotIndex++;
+    }
+
+    if (!queueRetracted) {
+      for (let i: number = 0; i < this.members.length; i++) {
+        const paper: PaperData = this.members[i];
+        const visibleWidthVp: number = Math.max(1, this.capsuleWidth(paper) - this.capsuleOffsetX(paper));
+        const topVp: number = slotIndex * (CAPSULE_HEIGHT + state.capsuleGap) + rowTopInsetVp;
+        rows.push({
+          topPx: uiContext.vp2px(topVp),
+          heightPx: uiContext.vp2px(rowHeightVp),
+          visibleWidthPx: uiContext.vp2px(visibleWidthVp),
+          radiusPx: uiContext.vp2px(radiusVp)
+        });
+        slotIndex++;
+      }
+    }
+
+    const applied: boolean = await applyCapsuleWindowMask(win, widthPx, heightPx, rows);
+    if (!applied) {
+      console.warn('capsule host is using rectangular transparency fallback');
+    }
   }
 
   private hostContext(): common.UIAbilityContext {

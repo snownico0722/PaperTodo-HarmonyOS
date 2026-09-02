@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.3.5 — 2026-09-02
+
+第五轮 HarmonyOS PC / 2in1 真机回归修复，针对 3.3.4 仍可复现的任务栏设置入口和胶囊原生矩形壳。
+
+- 设置窗口自定义关闭不再 `terminateSelf()`；改为最小化并保留 `ManagerAbility` / mission，让任务栏点击恢复同一个仍存活的设置窗口，避免 `removeMissionAfterTerminate: false` 留下死 mission。
+- 胶囊宿主横坐标不再使用会扣除 Dock / 系统保留区的 `availableArea` 右边界，改为默认 2in1 物理显示宽度右边界，右侧胶囊真正贴屏幕边缘；纵向位置仍使用可用区域避让系统 UI。
+- 按华为 2in1 异形窗口实践新增 `SystemCapability.Window.SessionManager` 和 `Window.setWindowMask()`：原生宿主窗口按主胶囊与普通胶囊实际可见像素生成联合掩码，矩形空白、队列间隙及收起后不可见区域由窗口系统真正裁掉，不再依赖背景色透明模拟异形窗口。
+- 胶囊 Hover 导致关闭段伸出 / 收回时同步重算 Window Mask，即使宿主宽高未变化也更新原生窗口形状。
+- 版本更新为 `3.3.5`（`versionCode: 3030500`，`buildVersion: 1`）。
+
 ## 3.3.4 — 2026-09-02
 
 第四轮 HarmonyOS PC / 2in1 真机收敛，修复 3.3.3 审查发现的生命周期与发布门禁问题。
