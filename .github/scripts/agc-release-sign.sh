@@ -467,9 +467,28 @@ sign_release() {
   echo "::add-mask::$keystore_password"
 
   derive_persistent_release_key "$key_file"
-  openssl req -new -sha256 -key "$key_file" \
+
+  # AGC certificate requests have been proven with keytool PKCS#10 output.
+  # Keep the persistent private key, but let keytool generate the CSR.
+  local bootstrap_certificate="$SIGN_DIR/release-bootstrap-cert.pem"
+  openssl req -new -x509 -sha256 -days 3650 \
+    -key "$key_file" \
     -subj "/C=CN/O=PaperTodo/OU=Release/CN=$STABLE_KEY_ALIAS" \
-    -out "$csr"
+    -out "$bootstrap_certificate"
+  openssl pkcs12 -export \
+    -name "$STABLE_KEY_ALIAS" \
+    -inkey "$key_file" \
+    -in "$bootstrap_certificate" \
+    -out "$keystore" \
+    -passout "pass:$keystore_password"
+  keytool -certreq \
+    -alias "$STABLE_KEY_ALIAS" \
+    -sigalg SHA256withECDSA \
+    -keystore "$keystore" \
+    -storetype pkcs12 \
+    -storepass "$keystore_password" \
+    -keypass "$keystore_password" \
+    -file "$csr"
 
   local jwt
   jwt="$(create_jwt)"
