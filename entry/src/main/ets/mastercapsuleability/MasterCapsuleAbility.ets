@@ -7,7 +7,9 @@ import {
 } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { display, window } from '@kit.ArkUI';
-import { normalizeCapsuleStartTopMargin } from '../common/CapsuleLayout';
+import { CapsuleRuntime } from '../common/CapsuleRuntime';
+import { DesktopShell } from '../common/DesktopShell';
+import { CAPSULE_PAGER_WIDTH, capsuleViewport, capsuleViewportTop } from '../common/CapsuleViewport';
 import {
   CAPSULE_HEIGHT,
   CAPSULE_MAX_WIDTH,
@@ -18,12 +20,12 @@ import {
 import { PaperStore } from '../common/PaperStore';
 
 const INITIAL_MASTER_ROW_WIDTH: number = 96;
-const INITIAL_INTERACTION_RESTORE_DELAY_MS: number = 16;
 const CAPSULE_SUBWINDOW_NAME: string = 'PaperTodoCapsuleSubWindow';
 
 export default class MasterCapsuleAbility extends UIAbility {
   private hostWindow: window.Window | null = null;
-  private mainWindow: window.Window | null = null;
+  private hostConfiguration: Promise<void> | null = null;
+  private capsuleWindow: window.Window | null = null;
   private windowStage: window.WindowStage | null = null;
   private activeDisplay: display.Display | null = null;
   private closeRequested: boolean = false;
@@ -52,6 +54,7 @@ export default class MasterCapsuleAbility extends UIAbility {
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     PaperStore.initialize(this.context);
+    CapsuleRuntime.begin(this.instanceToken);
     this.closeRequested = this.readCommand(want) === 'close';
     AppStorage.setOrCreate<number>('systemColorMode', this.context.config.colorMode ??
       ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT);
@@ -80,6 +83,7 @@ export default class MasterCapsuleAbility extends UIAbility {
     try {
       this.hostWindow = windowStage.getMainWindowSync();
     } catch (error) {
+      CapsuleRuntime.fail(this.instanceToken, 'Get capsule host window failed: ' + String(error));
       console.error('get capsule ability host window failed: ' + String(error));
       this.terminateAbility();
       return;
@@ -90,6 +94,7 @@ export default class MasterCapsuleAbility extends UIAbility {
 
     windowStage.loadContent('pages/Host', (error: BusinessError): void => {
       if (error.code !== 0) {
+        CapsuleRuntime.fail(this.instanceToken, 'Load capsule host page failed: ' + error.message);
         console.error('load capsule ability host page failed: ' + error.message);
         this.terminateAbility();
         return;
@@ -97,6 +102,7 @@ export default class MasterCapsuleAbility extends UIAbility {
       this.configureHiddenHostWindow().then((): Promise<void> => {
         return this.createCapsuleSubWindow(windowStage);
       }).catch((reason: Error): void => {
+        CapsuleRuntime.fail(this.instanceToken, reason.message);
         console.error('create capsule subwindow failed: ' + reason.message);
         this.terminateAbility();
       });
@@ -104,9 +110,7 @@ export default class MasterCapsuleAbility extends UIAbility {
   }
 
   onForeground(): void {
-    this.configureHiddenHostWindow().catch((error: Error): void => {
-      console.warn('re-hide capsule ability host failed: ' + error.message);
-    });
+    // Initial setup runs only in the loadContent chain, not concurrently with it.
     this.showAndRestyle();
     this.notifyAvailableAreaChanged();
   }
@@ -127,15 +131,18 @@ export default class MasterCapsuleAbility extends UIAbility {
     PaperStore.flushNow();
     this.unregisterCloseEvents();
     this.unregisterAvailableAreaListener();
-    const capsuleWindow: window.Window | null = this.mainWindow;
-    this.mainWindow = null;
-    if (capsuleWindow !== null) {
+    const closingWindow: window.Window | null = this.capsuleWindow;
+    this.capsuleWindow = null;
+    if (closingWindow !== null) {
       try {
-        capsuleWindow.destroyWindow();
+        closingWindow.destroyWindow().catch((error: BusinessError): void => {
+          console.warn('destroy capsule subwindow failed: ' + error.message);
+        });
       } catch (error) {
         console.warn('destroy capsule subwindow failed: ' + String(error));
       }
     }
+    CapsuleRuntime.end(this.instanceToken);
     this.hostWindow = null;
     this.windowStage = null;
     if (AppStorage.get<string>('masterCapsuleToken') === this.instanceToken) {
@@ -148,7 +155,18 @@ export default class MasterCapsuleAbility extends UIAbility {
     return false;
   }
 
-  private async configureHiddenHostWindow(): Promise<void> {
+  private configureHiddenHostWindow(): Promise<void> {
+    if (this.hostConfiguration !== null) {
+      return this.hostConfiguration;
+    }
+    const operation: Promise<void> = this.configureParentWindow();
+    this.hostConfiguration = operation;
+    operation.then((): void => { this.hostConfiguration = null; })
+      .catch((_error: Error): void => { this.hostConfiguration = null; });
+    return operation;
+  }
+
+  private async configureParentWindow(): Promise<void> {
     const win: window.Window | null = this.hostWindow;
     if (win === null) {
       return;
@@ -207,24 +225,32 @@ export default class MasterCapsuleAbility extends UIAbility {
         console.warn('anchor capsule ability host at display edge failed: ' + String(moveError));
       }
     }
-    try {
-      await win.showWindow();
-    } catch (error) {
-      console.warn('ensure capsule ability host visible failed: ' + String(error));
+    await win.showWindow();
+    // Cross-application topmost belongs to the UIAbility main window, not the
+    // application subwindow. Failure must not be silently treated as success.
+    await win.setWindowTopmost(true);
+    const rect = win.getWindowProperties().windowRect;
+    const visibleWidth: number = Math.max(0, Math.min(screen.width, rect.left + rect.width) - Math.max(0, rect.left));
+    const visibleHeight: number = Math.max(0, Math.min(screen.height, rect.top + rect.height) - Math.max(0, rect.top));
+    AppStorage.setOrCreate<string>('capsuleHostDiagnostics', JSON.stringify(rect));
+    if (visibleWidth !== 1 || visibleHeight !== 1 ||
+      rect.left !== screen.width - 1 || rect.top !== screen.height - 1) {
+      throw new Error('System adjusted the capsule parent anchor: ' + JSON.stringify(rect));
     }
+    CapsuleRuntime.parentPrepared(this.instanceToken);
   }
 
   private async createCapsuleSubWindow(windowStage: window.WindowStage): Promise<void> {
     const subWindow: window.Window = await windowStage.createSubWindow(CAPSULE_SUBWINDOW_NAME);
     if (this.windowStage !== windowStage || this.closeRequested || !this.isEligible()) {
       try {
-        subWindow.destroyWindow();
+        await subWindow.destroyWindow();
       } catch (_error) {
       }
       return;
     }
 
-    this.mainWindow = subWindow;
+    this.capsuleWindow = subWindow;
     try {
       await subWindow.setFollowParentWindowLayoutEnabled(false);
     } catch (error) {
@@ -247,22 +273,19 @@ export default class MasterCapsuleAbility extends UIAbility {
         resolve();
       });
     });
-    if (this.mainWindow !== subWindow || this.closeRequested) {
+    if (this.capsuleWindow !== subWindow || this.closeRequested) {
       return;
     }
     this.applyWindowStyle();
     this.applyTransparentSurfaceStyle();
     this.notifyAvailableAreaChanged();
-    await subWindow.showWindow();
-    setTimeout((): void => {
-      this.restoreInitialWindowInteraction().catch((restoreError: Error): void => {
-        console.warn('restore capsule subwindow interaction failed: ' + restoreError.message);
-      });
-    }, INITIAL_INTERACTION_RESTORE_DELAY_MS);
+    // The content page acknowledges readiness only after its native mask,
+    // showWindow and interaction calls complete. Never show an unmasked window.
+
   }
 
   private async prepareInitialGeometry(): Promise<void> {
-    const win: window.Window | null = this.mainWindow;
+    const win: window.Window | null = this.capsuleWindow;
     const contextWindow: window.Window | null = this.hostWindow;
     if (win === null || contextWindow === null) {
       return;
@@ -283,13 +306,15 @@ export default class MasterCapsuleAbility extends UIAbility {
     const includeMaster: boolean = state.useMasterCapsule;
     const queueRetracted: boolean = includeMaster && state.capsuleCollapseAllActive;
     const areaHeightVp: number = uiContext.px2vp(area.height);
-    const startTop: number = normalizeCapsuleStartTopMargin(state.capsuleStartTop, areaHeightVp,
-      members.length, state.capsuleGap, includeMaster);
-    const widthVp: number = this.hostWidthVp(members, includeMaster, queueRetracted);
-    const visibleMemberCount: number = queueRetracted ? 0 : members.length;
-    const slotCount: number = visibleMemberCount + (includeMaster ? 1 : 0);
-    const heightVp: number = Math.max(CAPSULE_HEIGHT,
-      slotCount * CAPSULE_HEIGHT + Math.max(0, slotCount - 1) * state.capsuleGap);
+    const viewport = capsuleViewport(areaHeightVp, members.length, state.capsuleGap,
+      includeMaster, queueRetracted, 0);
+    if (!viewport.fits) {
+      throw new Error('Available area is too small for a capsule viewport.');
+    }
+    const startTop: number = capsuleViewportTop(state.capsuleStartTop, areaHeightVp, viewport.height);
+    const widthVp: number = Math.max(viewport.pager ? CAPSULE_PAGER_WIDTH : 0,
+      this.hostWidthVp(members, includeMaster, queueRetracted));
+    const heightVp: number = viewport.height;
     const requestedWidthPx: number = Math.round(uiContext.vp2px(widthVp));
     const requestedHeightPx: number = Math.round(uiContext.vp2px(heightVp));
 
@@ -349,7 +374,7 @@ export default class MasterCapsuleAbility extends UIAbility {
   }
 
   private async setInitialWindowInteraction(enabled: boolean): Promise<void> {
-    const win: window.Window | null = this.mainWindow;
+    const win: window.Window | null = this.capsuleWindow;
     if (win === null) {
       return;
     }
@@ -364,13 +389,6 @@ export default class MasterCapsuleAbility extends UIAbility {
     } catch (error) {
       console.warn('set capsule host focusability failed: ' + String(error));
     }
-  }
-
-  private async restoreInitialWindowInteraction(): Promise<void> {
-    if (!this.initialInteractionLocked || this.closeRequested) {
-      return;
-    }
-    await this.setInitialWindowInteraction(true);
   }
 
   private isEligible(): boolean {
@@ -415,13 +433,16 @@ export default class MasterCapsuleAbility extends UIAbility {
   }
 
   private clearHostRegistration(): void {
+    if (AppStorage.get<string>('masterCapsuleToken') !== this.instanceToken) {
+      return;
+    }
     AppStorage.setOrCreate<boolean>('masterCapsuleOpen', false);
     AppStorage.delete('masterCapsuleWindow');
     AppStorage.delete('masterCapsuleToken');
   }
 
   private registerCloseEvents(windowStage: window.WindowStage): void {
-    const win: window.Window | null = this.mainWindow;
+    const win: window.Window | null = this.capsuleWindow;
     if (win !== null) {
       try {
         win.on('windowWillClose', this.windowWillCloseCallback);
@@ -439,7 +460,7 @@ export default class MasterCapsuleAbility extends UIAbility {
   }
 
   private unregisterCloseEvents(): void {
-    const win: window.Window | null = this.mainWindow;
+    const win: window.Window | null = this.capsuleWindow;
     if (win !== null && this.closeEventRegistered) {
       try {
         win.off('windowWillClose', this.windowWillCloseCallback);
@@ -460,22 +481,26 @@ export default class MasterCapsuleAbility extends UIAbility {
   }
 
   private showAndRestyle(): void {
-    const win: window.Window | null = this.mainWindow;
-    if (win === null) {
+    if (this.capsuleWindow === null || this.closeRequested || CapsuleRuntime.hasFailed()) {
       return;
     }
-    win.showWindow()
-      .then((): void => {
-        this.applyWindowStyle();
-        this.applyTransparentSurfaceStyle();
-      })
-      .catch((error: BusinessError): void => {
-        console.error('show capsule subwindow failed: ' + error.message);
+    this.configureHiddenHostWindow().then((): void => {
+      if (this.closeRequested || !CapsuleRuntime.isOwner(this.instanceToken)) {
+        return;
+      }
+      this.applyWindowStyle();
+      this.applyTransparentSurfaceStyle();
+      this.notifyAvailableAreaChanged();
+    }).catch((error: Error): void => {
+      CapsuleRuntime.fail(this.instanceToken, error.message);
+      DesktopShell.syncCapsules(this.context).catch((recoveryError: Error): void => {
+        console.error('recover capsule parent failed: ' + recoveryError.message);
       });
+    });
   }
 
   private applyTransparentSurfaceStyle(): void {
-    const win: window.Window | null = this.mainWindow;
+    const win: window.Window | null = this.capsuleWindow;
     if (win === null) {
       return;
     }
@@ -492,7 +517,7 @@ export default class MasterCapsuleAbility extends UIAbility {
   }
 
   private applyWindowStyle(): void {
-    const win: window.Window | null = this.mainWindow;
+    const win: window.Window | null = this.capsuleWindow;
     if (win === null) {
       return;
     }
@@ -520,20 +545,20 @@ export default class MasterCapsuleAbility extends UIAbility {
     win.setWindowShadowEnabled(false).catch((error: BusinessError): void => {
       console.warn('disable capsule host shadow failed: ' + error.message);
     });
-    win.setWindowTopmost(true).catch((error: BusinessError): void => {
-      console.warn('set capsule host topmost failed: ' + error.message);
-    });
   }
 
   private terminateAbility(): void {
     this.closeRequested = true;
+    CapsuleRuntime.end(this.instanceToken);
     this.unregisterCloseEvents();
-    const capsuleWindow: window.Window | null = this.mainWindow;
-    this.mainWindow = null;
+    const closingWindow: window.Window | null = this.capsuleWindow;
+    this.capsuleWindow = null;
     this.clearHostRegistration();
-    if (capsuleWindow !== null) {
+    if (closingWindow !== null) {
       try {
-        capsuleWindow.destroyWindow();
+        closingWindow.destroyWindow().catch((error: BusinessError): void => {
+          console.warn('destroy capsule subwindow failed: ' + error.message);
+        });
       } catch (error) {
         console.warn('destroy capsule subwindow during terminate failed: ' + String(error));
       }

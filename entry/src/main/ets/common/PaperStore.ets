@@ -59,6 +59,7 @@ import {
   VISUAL_TEXT_SMALL
 } from './Models';
 import { truncateText } from './TextSafety';
+import { CapsuleRuntime } from './CapsuleRuntime';
 import { NoteImageStore } from './NoteImageStore';
 import {
   cleanCommittedPaperTitle,
@@ -737,7 +738,7 @@ class PaperStoreImpl {
     for (let i: number = 0; i < state.papers.length; i++) {
       const paper: PaperData = state.papers[i];
       if (this.canPaperDisplayAsCapsuleInState(state, paper) && paper.isVisible &&
-        (paper.isCollapsed || state.showDeepCapsuleWhileExpanded)) {
+        (paper.isCollapsed || state.showDeepCapsuleWhileExpanded || CapsuleRuntime.isPending(paper.id))) {
         queue.push(paper);
       }
     }

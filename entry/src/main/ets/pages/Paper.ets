@@ -127,6 +127,7 @@ const SHOW_PAPER_LINK_DRAG_HANDLE: boolean = false;
 @Entry({ useSharedStorage: true })
 @Component
 struct Paper {
+  @StorageLink('capsuleRuntimeError') capsuleRuntimeError: string = '';
   @LocalStorageProp('paperId') paperId: string = '';
   @StorageLink('uiLanguage') @Watch('onUiLanguageChanged') uiLanguage: string = 'system';
   @StorageLink('systemLanguage') @Watch('onUiLanguageChanged') systemLanguage: string = 'zh-CN';
@@ -827,6 +828,18 @@ struct Paper {
       return;
     }
     this.cancelWindowMotion();
+    if (collapsed && this.useDeepCapsuleMode) {
+      this.surfaceTransitionGeneration++;
+      this.surfaceOpacity = 1;
+      this.surfaceScale = 1;
+      this.finishTodoItemDrag();
+      this.paper.capsuleWidth = this.calculateCapsuleWidth();
+      this.savePaper(true);
+      DesktopShell.setPaperCollapsed(this.hostContext(), this.paperId, true).catch((error: Error): void => {
+        console.error('safe capsule handoff failed: ' + error.message);
+      });
+      return;
+    }
     const generation: number = ++this.surfaceTransitionGeneration;
     if (this.enableAnimations) {
       this.getUIContext().animateTo({ duration: 90, curve: Curve.EaseIn }, (): void => {
@@ -4174,6 +4187,12 @@ struct Paper {
         Column() {
           this.HeaderBar()
           Divider().color(this.paperBorderColor()).opacity(0.45)
+          if (this.capsuleRuntimeError.length > 0) {
+            Text(this.text('status.capsuleRecovery'))
+              .width('100%').fontSize(10).fontColor(this.mutedColor())
+              .padding({ left: 10, right: 10, top: 4 }).maxLines(2)
+              .onClick((): void => { DesktopShell.openSettings(this.hostContext()); })
+          }
           if (this.statusMessage.length > 0) {
             Text(this.statusMessage)
               .width('100%')

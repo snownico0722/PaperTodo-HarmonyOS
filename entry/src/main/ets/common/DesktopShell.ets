@@ -3,6 +3,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { AppState, PAPER_TYPE_NOTE, PAPER_TYPE_TODO, PaperData } from './Models';
 import { PaperStore } from './PaperStore';
 import { TrayService } from './TrayService';
+import { CapsuleRuntime } from './CapsuleRuntime';
 
 export const PAPER_COMMAND_SHOW: string = 'show';
 export const PAPER_COMMAND_HIDE: string = 'hide';
@@ -61,6 +62,10 @@ export class DesktopShell {
 
   static async startMaster(context: common.UIAbilityContext,
     command: string = PAPER_COMMAND_SHOW): Promise<boolean> {
+    if (command === PAPER_COMMAND_SHOW && CapsuleRuntime.hasFailed()) {
+      return false;
+    }
+    const request: number = command === PAPER_COMMAND_SHOW ? CapsuleRuntime.request() : -1;
     const want: Want = {
       bundleName: DesktopShell.BUNDLE_NAME,
       moduleName: 'entry',
@@ -72,8 +77,11 @@ export class DesktopShell {
     try {
       const options: StartOptions = { hideStartWindow: true };
       await context.startAbility(want, options);
-      return true;
+      return command !== PAPER_COMMAND_SHOW || await CapsuleRuntime.waitFor(request);
     } catch (error) {
+      if (command === PAPER_COMMAND_SHOW) {
+        CapsuleRuntime.failRequest(request, 'Start capsule host failed: ' + String(error));
+      }
       console.error('start capsule host failed: ' + String(error));
       return false;
     }
@@ -152,14 +160,47 @@ export class DesktopShell {
   }
 
   static async hidePaper(context: common.UIAbilityContext, paperId: string): Promise<void> {
+    CapsuleRuntime.cancelCollapse(paperId);
     PaperStore.setPaperVisible(paperId, false);
-    await DesktopShell.startPaper(context, paperId, PAPER_COMMAND_HIDE);
+    if (AppStorage.get<boolean>('paperOpen:' + paperId) === true) {
+      await DesktopShell.startPaper(context, paperId, PAPER_COMMAND_HIDE);
+    }
     await DesktopShell.syncCapsules(context);
   }
 
   static async setPaperCollapsed(context: common.UIAbilityContext, paperId: string,
     collapsed: boolean): Promise<void> {
+    const initial: PaperData | null = PaperStore.getPaper(paperId);
+    if (initial === null) {
+      return;
+    }
     PaperStore.setPaperVisible(paperId, true);
+    const state: AppState = PaperStore.loadState();
+    if (collapsed && state.useCapsuleMode && state.useDeepCapsuleMode &&
+      PaperStore.canPaperDisplayAsCapsule(initial)) {
+      const token: number = CapsuleRuntime.stageCollapse(paperId);
+      try {
+        await DesktopShell.syncCapsules(context);
+        if (!CapsuleRuntime.ownsCollapse(paperId, token)) {
+          return;
+        }
+        const latest: PaperData | null = PaperStore.getPaper(paperId);
+        const current: AppState = PaperStore.loadState();
+        if (latest === null || !latest.isVisible || !current.useCapsuleMode || !current.useDeepCapsuleMode) {
+          return;
+        }
+        // Do not mutate the durable state or close the original before the host
+        // has acknowledged its current layout, native mask and successful show.
+        PaperStore.setPaperCollapsed(paperId, CapsuleRuntime.isReady());
+      } finally {
+        if (CapsuleRuntime.ownsCollapse(paperId, token)) {
+          CapsuleRuntime.cancelCollapse(paperId);
+        }
+      }
+      await DesktopShell.syncCapsules(context);
+      return;
+    }
+    CapsuleRuntime.cancelCollapse(paperId);
     PaperStore.setPaperCollapsed(paperId, collapsed);
     const stored: PaperData | null = PaperStore.getPaper(paperId);
     const appliedCollapsed: boolean = stored !== null && stored.isCollapsed;
@@ -169,8 +210,11 @@ export class DesktopShell {
   }
 
   static async deletePaper(context: common.UIAbilityContext, paperId: string): Promise<PaperData | null> {
+    CapsuleRuntime.cancelCollapse(paperId);
     const replacement: PaperData | null = PaperStore.deletePaper(paperId);
-    await DesktopShell.startPaper(context, paperId, PAPER_COMMAND_CLOSE);
+    if (AppStorage.get<boolean>('paperOpen:' + paperId) === true) {
+      await DesktopShell.startPaper(context, paperId, PAPER_COMMAND_CLOSE);
+    }
     if (replacement !== null) {
       await DesktopShell.startPaper(context, replacement.id, PAPER_COMMAND_SHOW);
     }
@@ -193,8 +237,11 @@ export class DesktopShell {
     const papers: PaperData[] = PaperStore.listPapers();
     const hides: Promise<boolean>[] = [];
     for (let i: number = 0; i < papers.length; i++) {
+      CapsuleRuntime.cancelCollapse(papers[i].id);
       PaperStore.setPaperVisible(papers[i].id, false);
-      hides.push(DesktopShell.startPaper(context, papers[i].id, PAPER_COMMAND_HIDE));
+      if (AppStorage.get<boolean>('paperOpen:' + papers[i].id) === true) {
+        hides.push(DesktopShell.startPaper(context, papers[i].id, PAPER_COMMAND_HIDE));
+      }
     }
     await Promise.all(hides);
     await DesktopShell.syncCapsules(context);
@@ -236,47 +283,71 @@ export class DesktopShell {
     }
     const enabled: boolean = state.useCapsuleMode && state.useDeepCapsuleMode;
 
-    // One top-level window now hosts the master row and every ordinary edge row.
-    // The host is required even if the optional master row itself is disabled.
     const hasCapsuleHost: boolean = enabled && members.length > 0;
     let capsuleReachable: boolean = false;
     if (hasCapsuleHost) {
       capsuleReachable = await DesktopShell.startMaster(context, PAPER_COMMAND_SHOW);
-    } else if (AppStorage.get<boolean>('masterCapsuleOpen') === true) {
+    }
+    // A failed host is latched until an explicit retry: no create/close storm.
+    // Re-expand persisted collapsed papers (including cold-start recovery).
+    if (hasCapsuleHost && !capsuleReachable && CapsuleRuntime.hasFailed()) {
+      const recover: PaperData[] = PaperStore.listPapers();
+      for (let i: number = 0; i < recover.length; i++) {
+        if (recover[i].isVisible && recover[i].isCollapsed) {
+          PaperStore.setPaperCollapsed(recover[i].id, false);
+        }
+      }
+    }
+    if ((!hasCapsuleHost || CapsuleRuntime.hasFailed()) &&
+      AppStorage.get<boolean>('masterCapsuleOpen') === true) {
       await DesktopShell.startMaster(context, PAPER_COMMAND_CLOSE);
     }
 
     const papers: PaperData[] = PaperStore.listPapers();
-    const operations: Promise<boolean>[] = [];
+    const closes: Promise<boolean>[] = [];
+    const starts: Promise<boolean>[] = [];
+    let paperReachable: boolean = false;
     for (let i: number = 0; i < papers.length; i++) {
       const paper: PaperData = papers[i];
-      const capsuleEligible: boolean = PaperStore.canPaperDisplayAsCapsule(paper);
-
-      // v3.3.1 created one specified UIAbility per ordinary capsule. Never create
-      // those missions again; only close a legacy instance if one is still alive.
       if (AppStorage.get<boolean>('edgeCapsuleOpen:' + paper.id) === true) {
-        operations.push(DesktopShell.startEdge(context, paper.id, PAPER_COMMAND_CLOSE));
+        closes.push(DesktopShell.startEdge(context, paper.id, PAPER_COMMAND_CLOSE));
       }
+      const open: boolean = AppStorage.get<boolean>('paperOpen:' + paper.id) === true;
+      const delegated: boolean = capsuleReachable && CapsuleRuntime.isReady() &&
+        state.useCapsuleMode && state.useDeepCapsuleMode && paper.isCollapsed &&
+        PaperStore.canPaperDisplayAsCapsule(paper);
+      if (!paper.isVisible || delegated) {
+        if (open) {
+          closes.push(DesktopShell.startPaper(context, paper.id, PAPER_COMMAND_CLOSE));
+        }
+      } else if (!open) {
+        starts.push(DesktopShell.startPaper(context, paper.id, PAPER_COMMAND_SHOW));
+      } else {
+        paperReachable = true;
+      }
+    }
+    await Promise.all(closes);
+    const results: boolean[] = await Promise.all(starts);
+    for (let i: number = 0; i < results.length; i++) {
+      paperReachable = paperReachable || results[i];
+    }
+    // Successful teardown is never evidence of a reachable surface.
+    return capsuleReachable || paperReachable;
+  }
 
-      if (!paper.isVisible) {
-        if (AppStorage.get<boolean>('paperOpen:' + paper.id) === true) {
-          operations.push(DesktopShell.startPaper(context, paper.id, PAPER_COMMAND_CLOSE));
-        }
-      } else if (paper.isCollapsed && enabled && capsuleEligible) {
-        if (AppStorage.get<boolean>('paperOpen:' + paper.id) === true) {
-          operations.push(DesktopShell.startPaper(context, paper.id, PAPER_COMMAND_CLOSE));
-        }
-      } else if (AppStorage.get<boolean>('paperOpen:' + paper.id) !== true) {
-        operations.push(DesktopShell.startPaper(context, paper.id, PAPER_COMMAND_SHOW));
-      }
+  static async restoreAllPapers(context: common.UIAbilityContext): Promise<void> {
+    const papers: PaperData[] = PaperStore.listPapers();
+    for (let i: number = 0; i < papers.length; i++) {
+      CapsuleRuntime.cancelCollapse(papers[i].id);
+      PaperStore.setPaperCollapsed(papers[i].id, false);
     }
-    if (operations.length > 0) {
-      const results: boolean[] = await Promise.all(operations);
-      for (let i: number = 0; i < results.length; i++) {
-        capsuleReachable = capsuleReachable || results[i];
-      }
-    }
-    return capsuleReachable;
+    await DesktopShell.showAll(context);
+  }
+
+  static async retryCapsules(context: common.UIAbilityContext): Promise<boolean> {
+    CapsuleRuntime.retry();
+    await DesktopShell.syncCapsules(context);
+    return CapsuleRuntime.isReady();
   }
 
   static terminate(context: common.UIAbilityContext): void {
@@ -286,10 +357,24 @@ export class DesktopShell {
   }
 
   static async exitApplication(context: common.UIAbilityContext): Promise<void> {
-    PaperStore.flushNow();
+    if (!PaperStore.flushNow()) {
+      AppStorage.setOrCreate<boolean>('saveExitBlocked', true);
+      await DesktopShell.openSettings(context);
+      return;
+    }
     AppStorage.setOrCreate<boolean>('applicationExitRequested', true);
     await TrayService.remove(context);
-    PaperStore.flushNow();
+    if (!PaperStore.flushNow()) {
+      AppStorage.setOrCreate<boolean>('applicationExitRequested', false);
+      AppStorage.setOrCreate<boolean>('saveExitBlocked', true);
+      // A second failure after removing the tray must also preserve recovery.
+      if (await TrayService.install(context)) {
+        await DesktopShell.startResident(context);
+      }
+      await DesktopShell.openSettings(context);
+      return;
+    }
+    AppStorage.setOrCreate<boolean>('saveExitBlocked', false);
     try {
       await context.getApplicationContext().killAllProcesses(true);
     } catch (error) {

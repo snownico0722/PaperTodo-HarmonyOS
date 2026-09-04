@@ -73,6 +73,9 @@ struct Index {
   @StorageLink('showTopBarExternalOpenButton') showTopBarExternalOpenButton: boolean = true;
   @StorageLink('systemColorMode') systemColorMode: number = ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT;
 
+  @StorageLink('capsuleRuntimeError') capsuleRuntimeError: string = '';
+  @StorageLink('saveExitBlocked') saveExitBlocked: boolean = false;
+  @State retryingCapsules: boolean = false;
   @State statusMessage: string = '';
   @State selectedPanel: string = 'general';
   @State retryingStatusBar: boolean = false;
@@ -165,6 +168,23 @@ struct Index {
     DesktopShell.syncCapsules(this.hostContext()).catch((error: Error): void => {
       console.error('PaperTodo capsule settings sync failed: ' + error.message);
     });
+  }
+
+  private restorePapers(): void {
+    DesktopShell.restoreAllPapers(this.hostContext()).catch((error: Error): void => {
+      this.statusMessage = error.message;
+    });
+  }
+
+  private retryCapsules(): void {
+    this.retryingCapsules = true;
+    DesktopShell.retryCapsules(this.hostContext()).catch((error: Error): void => {
+      this.statusMessage = error.message;
+    }).finally((): void => { this.retryingCapsules = false; });
+  }
+
+  private retrySave(): void {
+    this.saveExitBlocked = !PaperStore.flushNow();
   }
 
   private closeSettings(): void {
@@ -697,6 +717,33 @@ struct Index {
       }
       .width('100%')
       .margin({ top: 14 })
+
+      Row({ space: 8 }) {
+        Button(this.text('action.restorePapers'))
+          .height(30).fontSize(11)
+          .onClick((): void => this.restorePapers())
+        if (this.capsuleRuntimeError.length > 0) {
+          Button(this.text('action.retryCapsules'))
+            .height(30).fontSize(11).enabled(!this.retryingCapsules)
+            .onClick((): void => this.retryCapsules())
+        }
+        if (this.saveExitBlocked) {
+          Button(this.text('action.retrySave'))
+            .height(30).fontSize(11)
+            .onClick((): void => this.retrySave())
+        }
+      }
+      .width('100%').margin({ top: 8, bottom: 4 })
+      if (this.capsuleRuntimeError.length > 0) {
+        Text(this.text('status.capsuleRecovery') + '\n' + this.capsuleRuntimeError)
+          .width('100%').fontSize(11).fontColor(this.textColor())
+          .maxLines(3).margin({ bottom: 4 })
+      }
+      if (this.saveExitBlocked) {
+        Text(this.text('status.exitSaveFailed'))
+          .width('100%').fontSize(11).fontColor(this.textColor())
+          .margin({ bottom: 4 })
+      }
 
       if (this.selectedPanel === 'general') {
         Scroll() {

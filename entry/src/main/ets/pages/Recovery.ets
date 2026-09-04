@@ -64,6 +64,8 @@ struct Recovery {
           .layoutWeight(1)
           .enabled(!this.retrying)
           .onClick((): void => this.retryStatusBar())
+        Button('恢复纸片')
+          .onClick((): void => { DesktopShell.restoreAllPapers(this.hostContext()); })
         Button('设置')
           .onClick((): void => {
             DesktopShell.openSettings(this.hostContext());
