@@ -1,6 +1,7 @@
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { display, window } from '@kit.ArkUI';
-import { normalizeCapsuleStartTopMargin } from '../common/CapsuleLayout';
+import { CapsuleRuntime } from '../common/CapsuleRuntime';
+import { CAPSULE_PAGER_WIDTH, capsuleViewport, capsuleViewportTop } from '../common/CapsuleViewport';
 import { DesktopShell, PAPER_COMMAND_SHOW } from '../common/DesktopShell';
 import {
   CAPSULE_CLOSE_WIDTH,
@@ -37,6 +38,7 @@ const MASTER_ROW_MAX_WIDTH: number = 144;
 @Entry({ useSharedStorage: true })
 @Component
 struct MasterCapsule {
+  @StorageLink('capsuleLayoutRequest') @Watch('onStoreChanged') capsuleLayoutRequest: number = 0;
   @StorageLink('paperRevision') @Watch('onStoreChanged') paperRevision: number = 0;
   @StorageLink('capsuleAreaRevision') @Watch('onLayoutChanged') capsuleAreaRevision: number = 0;
   @StorageLink('capsuleCollapseAllActive') @Watch('onLayoutChanged')
@@ -49,19 +51,28 @@ struct MasterCapsule {
   @StorageLink('enableAnimations') enableAnimations: boolean = true;
   @StorageLink('collapseExpandedEdgeCapsuleOnClick')
   collapseExpandedEdgeCapsuleOnClick: boolean = false;
-  @StorageLink('hideEdgeCapsuleCloseButtonOnHover') hideEdgeCapsuleCloseButtonOnHover: boolean = false;
-  @StorageLink('edgeCapsuleTitleCharacterLimit') edgeCapsuleTitleCharacterLimit: number = 0;
+  @StorageLink('hideEdgeCapsuleCloseButtonOnHover') @Watch('onLayoutChanged') hideEdgeCapsuleCloseButtonOnHover: boolean = false;
+  @StorageLink('edgeCapsuleTitleCharacterLimit') @Watch('onLayoutChanged') edgeCapsuleTitleCharacterLimit: number = 0;
   @StorageLink('theme') theme: string = 'system';
   @StorageLink('colorScheme') colorScheme: string = 'warm';
-  @StorageLink('overallFontScale') overallFontScale: number = 1;
-  @StorageLink('capsuleTextSize') capsuleTextSize: string = 'medium';
-  @StorageLink('capsuleTextBold') capsuleTextBold: boolean = false;
+  @StorageLink('overallFontScale') @Watch('onLayoutChanged') overallFontScale: number = 1;
+  @StorageLink('capsuleTextSize') @Watch('onLayoutChanged') capsuleTextSize: string = 'medium';
+  @StorageLink('capsuleTextBold') @Watch('onLayoutChanged') capsuleTextBold: boolean = false;
   @StorageLink('uiLanguage') @Watch('onLayoutChanged') uiLanguage: string = 'system';
   @StorageLink('systemLanguage') @Watch('onLayoutChanged') systemLanguage: string = 'zh-CN';
   @StorageLink('systemColorMode') systemColorMode: number =
     ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT;
 
   @State members: PaperData[] = [];
+  @State visibleMembers: PaperData[] = [];
+  @State page: number = 0;
+  @State pages: number = 1;
+  @State hasPager: boolean = false;
+  private ownerToken: string = '';
+  private active: boolean = false;
+  private layoutGeneration: number = 0;
+  private viewportHeight: number = CAPSULE_HEIGHT;
+  private lastPresentedRequest: number = -1;
   @State @Watch('onLayoutChanged') hoveredPaperId: string = '';
   @State masterHovered: boolean = false;
   @State masterRowWidthVp: number = MASTER_ROW_INITIAL_WIDTH;
@@ -73,12 +84,17 @@ struct MasterCapsule {
   private dragMoved: boolean = false;
   private suppressClickUntil: number = 0;
   private lastGeometrySignature: string = '';
+  private lastMaskSignature: string = '';
 
   aboutToAppear(): void {
+    this.active = true;
+    this.ownerToken = AppStorage.get<string>('masterCapsuleToken') ?? '';
     this.refreshMembers();
   }
 
   aboutToDisappear(): void {
+    this.active = false;
+    this.layoutGeneration++;
     PaperStore.flushNow();
   }
 
@@ -102,6 +118,10 @@ struct MasterCapsule {
   }
 
   private requestWindowLayout(): void {
+    if (!this.active || !CapsuleRuntime.isOwner(this.ownerToken) || CapsuleRuntime.hasFailed()) {
+      return;
+    }
+    this.layoutGeneration++;
     this.layoutPending = true;
     if (this.layoutRunning) {
       return;
@@ -114,20 +134,53 @@ struct MasterCapsule {
       }
     }).catch((error: Error): void => {
       this.layoutRunning = false;
-      console.warn('layout capsule host failed: ' + error.message);
+      this.handleLayoutFailure(error).catch((recoveryError: Error): void => {
+        console.error('capsule recovery failed: ' + recoveryError.message);
+      });
     });
   }
 
+  private async handleLayoutFailure(error: Error): Promise<void> {
+    if (!this.active || !CapsuleRuntime.isOwner(this.ownerToken)) {
+      return;
+    }
+    const context: common.UIAbilityContext = this.hostContext();
+    this.layoutPending = false;
+    CapsuleRuntime.fail(this.ownerToken, error.message);
+    const win: window.Window | undefined = AppStorage.get<window.Window>('masterCapsuleWindow');
+    if (win !== undefined) {
+      await this.disposeFailedWindow(win);
+    }
+    await DesktopShell.syncCapsules(context);
+  }
+
+  private async disposeFailedWindow(win: window.Window): Promise<void> {
+    // API 23 public Window has no hide(). Dispose the failed subwindow and let
+    // the owning Ability terminate; an explicit retry creates a fresh one.
+    try {
+      await win.setWindowTouchable(false);
+    } catch (error) {
+      console.warn('disable failed capsule interaction: ' + String(error));
+    }
+    try {
+      await win.destroyWindow();
+    } catch (error) {
+      console.warn('dispose failed capsule window: ' + String(error));
+    }
+  }
+
   private async runWindowLayoutLoop(): Promise<void> {
-    while (this.layoutPending) {
+    while (this.layoutPending && this.active && !CapsuleRuntime.hasFailed()) {
       this.layoutPending = false;
       await this.syncWindowGeometry();
     }
   }
 
   private async syncWindowGeometry(): Promise<void> {
+    const generation: number = this.layoutGeneration;
+    const request: number = CapsuleRuntime.currentRequest();
     const win: window.Window | undefined = AppStorage.get<window.Window>('masterCapsuleWindow');
-    if (win === undefined || this.members.length === 0) {
+    if (win === undefined || this.members.length === 0 || !CapsuleRuntime.isParentReady(this.ownerToken)) {
       return;
     }
     let uiContext: UIContext;
@@ -156,8 +209,17 @@ struct MasterCapsule {
     const queueRetracted: boolean = includeMaster && state.capsuleCollapseAllActive;
     const areaHeightVp: number = uiContext.px2vp(area.height);
     this.availableHeightVp = areaHeightVp;
-    const normalizedTop: number = normalizeCapsuleStartTopMargin(state.capsuleStartTop, areaHeightVp,
-      this.members.length, state.capsuleGap, includeMaster);
+    const viewport = capsuleViewport(areaHeightVp, this.members.length, state.capsuleGap,
+      includeMaster, queueRetracted, this.page);
+    if (!viewport.fits) {
+      throw new Error('Available area is too small for a capsule viewport.');
+    }
+    this.page = viewport.page;
+    this.pages = viewport.pages;
+    this.hasPager = viewport.pager;
+    this.visibleMembers = this.members.slice(viewport.start, viewport.end);
+    this.viewportHeight = viewport.height;
+    const normalizedTop: number = capsuleViewportTop(state.capsuleStartTop, areaHeightVp, viewport.height);
     if (Math.abs(normalizedTop - state.capsuleStartTop) > 0.1) {
       PaperStore.setCapsuleStartTop(normalizedTop);
     }
@@ -165,11 +227,9 @@ struct MasterCapsule {
     if (Math.abs(measuredMasterWidth - this.masterRowWidthVp) > 0.1) {
       this.masterRowWidthVp = measuredMasterWidth;
     }
-    const widthVp: number = this.hostWidthVp(includeMaster, queueRetracted);
-    const visibleMemberCount: number = queueRetracted ? 0 : this.members.length;
-    const slotCount: number = visibleMemberCount + (includeMaster ? 1 : 0);
-    const heightVp: number = Math.max(CAPSULE_HEIGHT,
-      slotCount * CAPSULE_HEIGHT + Math.max(0, slotCount - 1) * state.capsuleGap);
+    const widthVp: number = Math.max(viewport.pager ? CAPSULE_PAGER_WIDTH : 0,
+      this.hostWidthVp(includeMaster, queueRetracted));
+    const heightVp: number = viewport.height;
     const requestedWidthPx: number = Math.round(uiContext.vp2px(widthVp));
     const requestedHeightPx: number = Math.round(uiContext.vp2px(heightVp));
     const desiredSignature: string = [normalizedTop, requestedWidthPx, requestedHeightPx].join(':');
@@ -193,6 +253,10 @@ struct MasterCapsule {
     } catch (error) {
       console.warn('query capsule subwindow actual geometry failed: ' + String(error));
     }
+    if (actualHeightPx > area.height || actualWidthPx > targetDisplay.width ||
+      actualHeightPx + 1 < requestedHeightPx || actualWidthPx + 1 < requestedWidthPx) {
+      throw new Error('System capsule geometry exceeds the available display.');
+    }
     const xPx: number = Math.round(targetDisplay.width - actualWidthPx);
     const yPx: number = Math.round(area.top + uiContext.vp2px(normalizedTop));
     try {
@@ -201,8 +265,37 @@ struct MasterCapsule {
       console.warn('async capsule subwindow edge move failed, falling back: ' + String(error));
       await win.moveWindowTo(xPx, yPx);
     }
+    if (!this.active || !CapsuleRuntime.isOwner(this.ownerToken) || CapsuleRuntime.hasFailed()) {
+      return;
+    }
+    if (generation !== this.layoutGeneration || request !== CapsuleRuntime.currentRequest()) {
+      this.layoutPending = true;
+      return;
+    }
+    const finalRect = win.getWindowProperties().windowRect;
+    if (Math.abs(finalRect.left + finalRect.width - targetDisplay.width) > 1 ||
+      finalRect.top < area.top || finalRect.top + finalRect.height > area.top + area.height) {
+      throw new Error('System adjusted the capsule edge position: ' + JSON.stringify(finalRect));
+    }
     await this.syncNativeWindowMask(win, uiContext, actualWidthPx, actualHeightPx,
       state, includeMaster, queueRetracted);
+    if (!this.active || !CapsuleRuntime.isOwner(this.ownerToken) || CapsuleRuntime.hasFailed()) {
+      return;
+    }
+    if (generation !== this.layoutGeneration || request !== CapsuleRuntime.currentRequest()) {
+      this.layoutPending = true;
+      return;
+    }
+    if (this.lastPresentedRequest !== request) {
+      await win.showWindow();
+      await win.setWindowTouchable(true);
+      await win.setWindowFocusable(true);
+      this.lastPresentedRequest = request;
+    }
+    const confirmed: boolean = CapsuleRuntime.confirm(this.ownerToken, request);
+    if (!confirmed && (!this.active || !CapsuleRuntime.isOwner(this.ownerToken) || CapsuleRuntime.hasFailed())) {
+      await this.disposeFailedWindow(win);
+    }
   }
 
   private measureMasterRowWidth(uiContext: UIContext): number {
@@ -256,9 +349,18 @@ struct MasterCapsule {
       slotIndex++;
     }
 
+    if (!queueRetracted && this.hasPager) {
+      rows.push({
+        topPx: uiContext.vp2px(slotIndex * (CAPSULE_HEIGHT + state.capsuleGap) + rowTopInsetVp),
+        heightPx: uiContext.vp2px(rowHeightVp),
+        visibleWidthPx: uiContext.vp2px(CAPSULE_PAGER_WIDTH),
+        radiusPx: uiContext.vp2px(radiusVp)
+      });
+      slotIndex++;
+    }
     if (!queueRetracted) {
-      for (let i: number = 0; i < this.members.length; i++) {
-        const paper: PaperData = this.members[i];
+      for (let i: number = 0; i < this.visibleMembers.length; i++) {
+        const paper: PaperData = this.visibleMembers[i];
         const visibleWidthVp: number = Math.max(1, this.capsuleWidth(paper) - this.capsuleOffsetX(paper));
         const topVp: number = slotIndex * (CAPSULE_HEIGHT + state.capsuleGap) + rowTopInsetVp;
         rows.push({
@@ -271,10 +373,15 @@ struct MasterCapsule {
       }
     }
 
+    const signature: string = widthPx.toString() + ':' + heightPx.toString() + ':' + JSON.stringify(rows);
+    if (signature === this.lastMaskSignature) {
+      return;
+    }
     const applied: boolean = await applyCapsuleWindowMask(win, widthPx, heightPx, rows);
     if (!applied) {
-      console.warn('capsule host is using rectangular transparency fallback');
+      throw new Error('Native capsule mask failed; rectangular fallback is disabled.');
     }
+    this.lastMaskSignature = signature;
   }
 
   private hostContext(): common.UIAbilityContext {
@@ -308,8 +415,8 @@ struct MasterCapsule {
       console.warn('query capsule drag bounds failed: ' + String(error));
     }
     const areaHeight: number = this.availableHeightVp > 0 ? this.availableHeightVp : fallbackHeight;
-    const nextTop: number = normalizeCapsuleStartTopMargin(this.dragStartTop + event.offsetY, areaHeight,
-      this.members.length, this.capsuleGap, this.useMasterCapsule);
+    const nextTop: number = capsuleViewportTop(this.dragStartTop + event.offsetY, areaHeight,
+      this.viewportHeight);
     if (Math.abs(nextTop - this.capsuleStartTop) > 0.1) {
       PaperStore.setCapsuleStartTop(nextTop);
     }
@@ -595,7 +702,6 @@ struct MasterCapsule {
       .width(this.capsuleWidth(paper))
       .height(30)
       .translate({ x: this.capsuleOffsetX(paper) })
-      .animation({ duration: this.enableAnimations ? 150 : 0, curve: Curve.EaseOut })
       .backgroundColor(this.palette().paper)
       .border({ width: 1, color: paper.isCollapsed ? this.palette().border : this.palette().accent })
       .borderRadius({ topLeft: 15, bottomLeft: 15, topRight: 0, bottomRight: 0 })
@@ -616,13 +722,54 @@ struct MasterCapsule {
     .padding({ top: 8, bottom: 8 })
   }
 
+  private changePage(delta: number): void {
+    const next: number = Math.max(0, Math.min(this.pages - 1, this.page + delta));
+    if (next !== this.page) {
+      this.page = next;
+      this.hoveredPaperId = '';
+      this.requestWindowLayout();
+    }
+  }
+
+  @Builder
+  private PagerRow() {
+    Row() {
+      Row() {
+        Button('‹', { type: ButtonType.Normal })
+          .width(28).height(30).padding(0)
+          .backgroundColor(Color.Transparent).fontColor(this.palette().text)
+          .enabled(this.page > 0)
+          .accessibilityText(this.text('capsule.previousPage'))
+          .onClick((): void => this.changePage(-1))
+        Text((this.page + 1).toString() + '/' + this.pages.toString())
+          .layoutWeight(1).fontSize(11).textAlign(TextAlign.Center)
+          .fontColor(this.palette().text)
+        Button('›', { type: ButtonType.Normal })
+          .width(28).height(30).padding(0)
+          .backgroundColor(Color.Transparent).fontColor(this.palette().text)
+          .enabled(this.page + 1 < this.pages)
+          .accessibilityText(this.text('capsule.nextPage'))
+          .onClick((): void => this.changePage(1))
+      }
+      .width(CAPSULE_PAGER_WIDTH).height(30)
+      .backgroundColor(this.palette().paper)
+      .border({ width: 1, color: this.palette().border })
+      .borderRadius({ topLeft: 15, bottomLeft: 15, topRight: 0, bottomRight: 0 })
+    }
+    .width('100%').height(CAPSULE_HEIGHT)
+    .justifyContent(FlexAlign.End).padding({ top: 8, bottom: 8 })
+  }
+
   build() {
     Column({ space: this.capsuleGap }) {
       if (this.useMasterCapsule) {
         this.MasterRow()
       }
-      if (!this.capsuleCollapseAllActive) {
-        ForEach(this.members, (paper: PaperData) => {
+      if (!this.useMasterCapsule || !this.capsuleCollapseAllActive) {
+        if (this.hasPager) {
+          this.PagerRow()
+        }
+        ForEach(this.visibleMembers, (paper: PaperData) => {
           this.CapsuleRow(paper)
         }, (paper: PaperData): string => paper.id)
       }

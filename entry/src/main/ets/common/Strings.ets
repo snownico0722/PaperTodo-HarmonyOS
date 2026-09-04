@@ -174,6 +174,13 @@ function textZhCn(key: string): string {
 
     case 'action.newTodo': return '☑ 新建待办';
     case 'action.newNote': return '✎ 新建笔记';
+    case 'action.restorePapers': return '恢复全部纸片';
+    case 'action.retryCapsules': return '重试侧边胶囊';
+    case 'action.retrySave': return '重试保存';
+    case 'status.capsuleRecovery': return '侧边胶囊未就绪，纸片已保留或恢复为展开状态。';
+    case 'status.exitSaveFailed': return '尚有内容保存失败，已取消退出。请重试保存，不要强制结束应用。';
+    case 'capsule.previousPage': return '上一页胶囊';
+    case 'capsule.nextPage': return '下一页胶囊';
     case 'action.showAll': return '显示全部';
     case 'action.hideAll': return '隐藏全部';
     case 'action.restoreBackup': return '恢复备份';
@@ -449,6 +456,13 @@ function textEn(key: string): string {
     case 'section.systemEntry': return 'System entry';
     case 'action.newTodo': return '☑ New to-do';
     case 'action.newNote': return '✎ New note';
+    case 'action.restorePapers': return 'Restore all papers';
+    case 'action.retryCapsules': return 'Retry edge capsules';
+    case 'action.retrySave': return 'Retry save';
+    case 'status.capsuleRecovery': return 'Edge capsules are not ready. Papers have been kept or restored as expanded windows.';
+    case 'status.exitSaveFailed': return 'Some changes could not be saved. Exit was cancelled. Retry saving before closing the app.';
+    case 'capsule.previousPage': return 'Previous capsule page';
+    case 'capsule.nextPage': return 'Next capsule page';
     case 'action.showAll': return 'Show all';
     case 'action.hideAll': return 'Hide all';
     case 'action.restoreBackup': return 'Restore backup';
@@ -679,6 +693,13 @@ function textJa(key: string): string {
     case 'section.systemEntry': return 'システム入口';
     case 'action.newTodo': return '☑ ToDo を作成';
     case 'action.newNote': return '✎ ノートを作成';
+    case 'action.restorePapers': return 'すべての紙片を復元';
+    case 'action.retryCapsules': return 'サイドカプセルを再試行';
+    case 'action.retrySave': return '保存を再試行';
+    case 'status.capsuleRecovery': return 'サイドカプセルを表示できません。紙片は展開した状態で保持または復元されました。';
+    case 'status.exitSaveFailed': return '保存できない変更があるため終了を中止しました。アプリを強制終了せず、保存を再試行してください。';
+    case 'capsule.previousPage': return '前のカプセルページ';
+    case 'capsule.nextPage': return '次のカプセルページ';
     case 'action.showAll': return 'すべて表示';
     case 'action.hideAll': return 'すべて隠す';
     case 'action.restoreBackup': return 'バックアップを復元';
@@ -910,6 +931,13 @@ function textKo(key: string): string {
     case 'section.systemEntry': return '시스템 진입점';
     case 'action.newTodo': return '☑ 할 일 만들기';
     case 'action.newNote': return '✎ 노트 만들기';
+    case 'action.restorePapers': return '모든 종이 복원';
+    case 'action.retryCapsules': return '가장자리 캡슐 다시 시도';
+    case 'action.retrySave': return '저장 다시 시도';
+    case 'status.capsuleRecovery': return '가장자리 캡슐을 표시하지 못했습니다. 종이는 펼친 상태로 유지되거나 복원되었습니다.';
+    case 'status.exitSaveFailed': return '저장하지 못한 변경 사항이 있어 종료를 취소했습니다. 앱을 강제 종료하지 말고 저장을 다시 시도하세요.';
+    case 'capsule.previousPage': return '이전 캡슐 페이지';
+    case 'capsule.nextPage': return '다음 캡슐 페이지';
     case 'action.showAll': return '모두 표시';
     case 'action.hideAll': return '모두 숨기기';
     case 'action.restoreBackup': return '백업 복원';

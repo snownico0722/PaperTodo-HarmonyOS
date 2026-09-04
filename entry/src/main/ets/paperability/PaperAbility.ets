@@ -21,6 +21,7 @@ import {
   PAPER_COMMAND_SHOW
 } from '../common/DesktopShell';
 import { PaperStore } from '../common/PaperStore';
+import { CapsuleRuntime } from '../common/CapsuleRuntime';
 import { PAPER_ACTION_HIDE, resolveSystemCloseAction } from '../common/PaperInteractionPolicy';
 
 const DOMAIN: number = 0x0000;
@@ -39,6 +40,8 @@ interface AvailableAreaPx {
 
 export default class PaperAbility extends UIAbility {
   private paperId: string = '';
+  private contentLoaded: boolean = false;
+  private delegatingToEdge: boolean = false;
   private storage: LocalStorage = new LocalStorage();
   private mainWindow: window.Window | null = null;
   private windowStage: window.WindowStage | null = null;
@@ -184,6 +187,7 @@ export default class PaperAbility extends UIAbility {
         this.terminateAbility();
         return;
       }
+      this.contentLoaded = true;
       this.configureMainWindow()
         .then(async (): Promise<boolean> => {
           if (!this.shouldDelegateToEdge()) {
@@ -335,9 +339,35 @@ export default class PaperAbility extends UIAbility {
   }
 
   private async delegateCollapsedPaperToEdge(): Promise<void> {
-    this.clearOpenMarkerIfOwned();
-    await DesktopShell.syncCapsules(this.context);
-    this.terminateAbility();
+    if (this.delegatingToEdge) {
+      return;
+    }
+    this.delegatingToEdge = true;
+    try {
+      await DesktopShell.syncCapsules(this.context);
+      if (CapsuleRuntime.isReady() && this.shouldDelegateToEdge()) {
+        this.clearOpenMarkerIfOwned();
+        this.terminateAbility();
+        return;
+      }
+      // The host failed or eligibility changed while it was starting. Keep the
+      // existing paper, or load its normal content on a cold-start delegation.
+      PaperStore.setPaperCollapsed(this.paperId, false);
+      const paper: PaperData | null = PaperStore.getPaper(this.paperId);
+      if (paper === null || !paper.isVisible) {
+        this.terminateAbility();
+        return;
+      }
+      this.markWindowOpen();
+      if (!this.contentLoaded && this.windowStage !== null) {
+        this.loadPaperContent(this.windowStage);
+      } else {
+        await this.showAndConfigure();
+        await this.setInitialWindowInteraction(true);
+      }
+    } finally {
+      this.delegatingToEdge = false;
+    }
   }
 
   private async hideAndTerminate(): Promise<void> {

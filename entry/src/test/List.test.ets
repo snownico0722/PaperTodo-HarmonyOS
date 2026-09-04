@@ -1,3 +1,4 @@
+import capsuleReliabilityTest from './CapsuleReliability.test';
 import capsuleLayoutTest from './CapsuleLayout.test';
 import capsuleEligibilityTest from './CapsuleEligibility.test';
 import externalMarkdownTest from './ExternalMarkdown.test';
@@ -13,6 +14,7 @@ import textSafetyTest from './TextSafety.test';
 import todoHistoryTest from './TodoHistory.test';
 
 export default function testsuite(): void {
+  capsuleReliabilityTest();
   capsuleLayoutTest();
   capsuleEligibilityTest();
   externalMarkdownTest();
