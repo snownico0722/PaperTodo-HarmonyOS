@@ -1,0 +1,30 @@
+name: Capsule repair workspace
+
+on:
+  push:
+    branches: ['fix/capsule-readiness-20260905']
+    paths: ['.github/workflows/capsule-repair-workspace.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    if: github.ref == 'refs/heads/fix/capsule-readiness-20260905'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # Temporary, branch-scoped source transport for the repair workspace.
+      # No repository credentials, build secrets or .git data are included.
+      # This helper is removed from the final repair tree before review.
+      - name: Snapshot source only
+        run: tar --exclude=.git -czf "$RUNNER_TEMP/papertodo-repair-source.tar.gz" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: papertodo-repair-source
+          path: ${{ runner.temp }}/papertodo-repair-source.tar.gz
+          retention-days: 1
+          if-no-files-found: error
