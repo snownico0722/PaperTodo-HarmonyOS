@@ -144,18 +144,29 @@ struct MasterCapsule {
     if (!this.active || !CapsuleRuntime.isOwner(this.ownerToken)) {
       return;
     }
+    const context: common.UIAbilityContext = this.hostContext();
     this.layoutPending = false;
     CapsuleRuntime.fail(this.ownerToken, error.message);
     const win: window.Window | undefined = AppStorage.get<window.Window>('masterCapsuleWindow');
     if (win !== undefined) {
-      try {
-        await win.setWindowTouchable(false);
-        await win.hide();
-      } catch (hideError) {
-        console.warn('hide failed capsule window: ' + String(hideError));
-      }
+      await this.disposeFailedWindow(win);
     }
-    await DesktopShell.syncCapsules(this.hostContext());
+    await DesktopShell.syncCapsules(context);
+  }
+
+  private async disposeFailedWindow(win: window.Window): Promise<void> {
+    // API 23 public Window has no hide(). Dispose the failed subwindow and let
+    // the owning Ability terminate; an explicit retry creates a fresh one.
+    try {
+      await win.setWindowTouchable(false);
+    } catch (error) {
+      console.warn('disable failed capsule interaction: ' + String(error));
+    }
+    try {
+      await win.destroyWindow();
+    } catch (error) {
+      console.warn('dispose failed capsule window: ' + String(error));
+    }
   }
 
   private async runWindowLayoutLoop(): Promise<void> {
@@ -283,8 +294,7 @@ struct MasterCapsule {
     }
     const confirmed: boolean = CapsuleRuntime.confirm(this.ownerToken, request);
     if (!confirmed && (!this.active || !CapsuleRuntime.isOwner(this.ownerToken) || CapsuleRuntime.hasFailed())) {
-      await win.setWindowTouchable(false);
-      await win.hide();
+      await this.disposeFailedWindow(win);
     }
   }
 
