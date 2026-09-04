@@ -1,0 +1,26 @@
+name: Capsule runtime regressions
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  regressions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install pinned test transpiler (no lifecycle scripts)
+        run: npm install --prefix "$RUNNER_TEMP/papertodo-tests" --ignore-scripts --no-audit --no-fund typescript@5.8.3
+      - name: Execute production logic with explicit platform mocks
+        run: NODE_PATH="$RUNNER_TEMP/papertodo-tests/node_modules" node --test .github/scripts/test-capsule-runtime.cjs
